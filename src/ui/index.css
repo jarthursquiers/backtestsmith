@@ -1,0 +1,84 @@
+@import 'tailwindcss';
+
+/*
+ * Vite's renderer root is src/renderer (which holds only index.html), so
+ * Tailwind's automatic source detection would find no utility classes at all.
+ * Point it explicitly at the component tree.
+ */
+@source '../ui';
+
+/*
+ * Dark-first palette tuned for long research sessions: low-chroma slate ground
+ * so that P/L color (the only saturated thing on screen) always reads as signal.
+ */
+@theme {
+  --color-ground: #0b0f16;
+  --color-surface: #111725;
+  --color-surface-2: #161e30;
+  --color-line: #222d44;
+  --color-line-soft: #1a2233;
+
+  --color-ink: #e6ecf7;
+  --color-ink-dim: #94a3bd;
+  --color-ink-faint: #64748b;
+
+  --color-accent: #4f9cf9;
+  --color-accent-dim: #1e3a5f;
+
+  --color-gain: #34d399;
+  --color-loss: #f87171;
+  --color-warn: #fbbf24;
+
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Consolas', ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-ground);
+  color: var(--color-ink);
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* Tabular numerals everywhere numbers are compared down a column. */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2f3d5c;
+}
+
+/* Inputs inherit the dark ground rather than the UA's white default. */
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input[type='date']::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  cursor: pointer;
+}

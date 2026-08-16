@@ -1,0 +1,153 @@
+import { DateTime } from 'luxon'
+import { isEarlyCloseDay, isMarketHoliday } from './holidays.js'
+
+/**
+ * Every trading calculation in this application is anchored to U.S. Eastern
+ * market time. Provider timestamps arrive as UTC epoch milliseconds; calendar
+ * dates arrive as ET market dates. Mixing the two silently is the single most
+ * likely source of off-by-one-day and DST bugs, so all conversion goes through
+ * this module.
+ */
+export const MARKET_ZONE = 'America/New_York'
+
+/** Regular session open, Eastern. */
+export const SESSION_OPEN = { hour: 9, minute: 30 } as const
+/** Regular session close, Eastern. */
+export const SESSION_CLOSE = { hour: 16, minute: 0 } as const
+/** Half-session close, Eastern. */
+export const EARLY_SESSION_CLOSE = { hour: 13, minute: 0 } as const
+
+/** A market date in YYYY-MM-DD form, always interpreted in Eastern time. */
+export type MarketDate = string
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+
+export function assertMarketDate(date: string): MarketDate {
+  if (!ISO_DATE.test(date)) {
+    throw new Error(`Invalid market date "${date}": expected YYYY-MM-DD`)
+  }
+  return date
+}
+
+/** Converts a UTC epoch-millisecond timestamp into an Eastern-time DateTime. */
+export function toEastern(timestampMs: number): DateTime {
+  return DateTime.fromMillis(timestampMs, { zone: MARKET_ZONE })
+}
+
+/**
+ * The Eastern market date a timestamp belongs to.
+ *
+ * Note this is the *calendar date in Eastern time*, which is why a 20:30 UTC
+ * timestamp maps to the same day but a 01:00 UTC timestamp maps to the previous
+ * day. Naive UTC date slicing gets this wrong for the after-hours tail.
+ */
+export function marketDateOf(timestampMs: number): MarketDate {
+  return toEastern(timestampMs).toFormat('yyyy-MM-dd')
+}
+
+/** Builds a UTC epoch-millisecond timestamp from an Eastern-time wall clock. */
+export function easternToTimestamp(
+  date: MarketDate,
+  hour: number,
+  minute: number,
+  second = 0
+): number {
+  assertMarketDate(date)
+  const dt = DateTime.fromObject(
+    { year: Number(date.slice(0, 4)), month: Number(date.slice(5, 7)), day: Number(date.slice(8, 10)), hour, minute, second },
+    { zone: MARKET_ZONE }
+  )
+  if (!dt.isValid) {
+    throw new Error(`Invalid Eastern datetime ${date} ${hour}:${minute}: ${dt.invalidReason}`)
+  }
+  return dt.toMillis()
+}
+
+/** Parses "HH:mm" or "HH:mm:ss" into components; throws on malformed input. */
+export function parseTimeOfDay(value: string): { hour: number; minute: number; second: number } {
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(value)
+  if (!m) throw new Error(`Invalid time of day "${value}": expected HH:mm`)
+  const hour = Number(m[1])
+  const minute = Number(m[2])
+  const second = m[3] ? Number(m[3]) : 0
+  if (hour > 23 || minute > 59 || second > 59) {
+    throw new Error(`Invalid time of day "${value}": out of range`)
+  }
+  return { hour, minute, second }
+}
+
+/** Session open timestamp (9:30 AM ET) for a market date. */
+export function sessionOpen(date: MarketDate): number {
+  return easternToTimestamp(date, SESSION_OPEN.hour, SESSION_OPEN.minute)
+}
+
+/**
+ * Session close timestamp for a market date, honoring 1:00 PM ET half sessions.
+ */
+export function sessionClose(date: MarketDate): number {
+  const close = isEarlyCloseDay(date) ? EARLY_SESSION_CLOSE : SESSION_CLOSE
+  return easternToTimestamp(date, close.hour, close.minute)
+}
+
+/** True when the timestamp falls inside the regular session for its own market date. */
+export function isDuringRegularSession(timestampMs: number): boolean {
+  const date = marketDateOf(timestampMs)
+  if (!isTradingDay(date)) return false
+  return timestampMs >= sessionOpen(date) && timestampMs < sessionClose(date)
+}
+
+/** Number of regular-session minutes in a market date; 0 for non-trading days. */
+export function sessionMinuteCount(date: MarketDate): number {
+  if (!isTradingDay(date)) return 0
+  return Math.round((sessionClose(date) - sessionOpen(date)) / 60000)
+}
+
+export function isWeekend(date: MarketDate): boolean {
+  assertMarketDate(date)
+  const dow = DateTime.fromISO(date, { zone: MARKET_ZONE }).weekday // 1=Mon..7=Sun
+  return dow === 6 || dow === 7
+}
+
+/** A trading day is a weekday that is not a full-day market holiday. */
+export function isTradingDay(date: MarketDate): boolean {
+  assertMarketDate(date)
+  return !isWeekend(date) && !isMarketHoliday(date)
+}
+
+export function addCalendarDays(date: MarketDate, days: number): MarketDate {
+  assertMarketDate(date)
+  return DateTime.fromISO(date, { zone: MARKET_ZONE }).plus({ days }).toFormat('yyyy-MM-dd')
+}
+
+/** Next trading day strictly after `date`. */
+export function nextTradingDay(date: MarketDate): MarketDate {
+  let cursor = addCalendarDays(date, 1)
+  for (let i = 0; i < 30; i++) {
+    if (isTradingDay(cursor)) return cursor
+    cursor = addCalendarDays(cursor, 1)
+  }
+  throw new Error(`No trading day found within 30 days after ${date}`)
+}
+
+/** Previous trading day strictly before `date`. */
+export function previousTradingDay(date: MarketDate): MarketDate {
+  let cursor = addCalendarDays(date, -1)
+  for (let i = 0; i < 30; i++) {
+    if (isTradingDay(cursor)) return cursor
+    cursor = addCalendarDays(cursor, -1)
+  }
+  throw new Error(`No trading day found within 30 days before ${date}`)
+}
+
+/** Inclusive list of trading days in [from, to]. */
+export function tradingDaysBetween(from: MarketDate, to: MarketDate): MarketDate[] {
+  assertMarketDate(from)
+  assertMarketDate(to)
+  const days: MarketDate[] = []
+  let cursor = from
+  while (cursor <= to) {
+    if (isTradingDay(cursor)) days.push(cursor)
+    cursor = addCalendarDays(cursor, 1)
+  }
+  return days
+}
