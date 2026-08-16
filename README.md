@@ -20,7 +20,7 @@ Built in verifiable phases. **Phases 1 and 2 are complete.**
 | 2 | Massive API client, rate limiter, contract lookup, minute aggregates, dev UI | Done |
 | 3 | Local cache (DuckDB) so backtests never re-call Massive | Done |
 | 4 | SPX underlying history via CSV import (`I:SPX` not entitled) | Mechanism done, data not yet loaded |
-| 5 | Single butterfly reconstruction, minute by minute | Planned |
+| 5 | Single butterfly reconstruction, minute by minute | Done |
 | 6 | Single-trade management rules | Planned |
 | 7 | Automated entry generation (9 EMA, 7 DTE, placement) | Planned |
 | 8 | Batch backtester and summary statistics | Planned |
@@ -165,6 +165,48 @@ Because of this, a contract that never traded costs exactly one request, ever.
 - Writes are delete-then-insert per day inside a transaction, so re-downloading
   a day is idempotent.
 - Weekends and holidays are never fetched and never recorded as gaps.
+
+## Butterfly reconstruction
+
+A butterfly's value at any minute is computed from its three legs:
+
+```
+value = lower - 2 x center + upper
+```
+
+This is the *long* butterfly convention: long one lower strike, short two center
+strikes, long one upper. The result is the net debit, bounded below by zero and
+above by the wing width, which is what makes the position defined-risk. The
+arithmetic is identical for the call and put variants; only the strike selection
+relative to the underlying differs.
+
+P/L is measured against the entry debit, so a percentage return is also a
+percentage of risk.
+
+### Choosing the legs
+
+Selecting a leg by strike alone is ambiguous on third-Friday expirations, where
+SPX lists both the AM-settled monthly and the PM-settled weekly at every strike.
+The builder therefore **refuses to guess**: an ambiguous strike is an error
+naming the available roots, an explicitly requested root is honored or refused
+but never substituted, and legs that do not share a settlement style are
+rejected outright.
+
+### Missing data
+
+A butterfly cannot be marked unless all three legs have a price in the same
+minute, and for the out-of-the-money wings this study uses, silent minutes are
+common. Two policies are available:
+
+- **Strict** - only minutes where all three legs traded produce an observation.
+- **Carry forward** - the last observed price may be reused for a configurable
+  number of minutes, after which the minute goes unpriced.
+
+No value is ever interpolated or invented. A minute that cannot be priced
+produces no observation and is counted against the trade's data quality instead.
+Every trade therefore carries coverage (minutes priced), freshness (minutes where
+all three legs actually traded), the longest consecutive gap, and per-leg absent
+counts, so results can be filtered on quality rather than trusted blindly.
 
 ## SPX underlying data
 

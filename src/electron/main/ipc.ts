@@ -8,7 +8,12 @@ import {
   extractAuthorizationCode
 } from '../../data/schwab/auth.js'
 import type { SchwabBackfillRequest, SchwabBackfillResult } from '../../shared/schwab.js'
-import { marketDateOf } from '../../core/time/marketTime.js'
+import type { ChainSummary, ReconstructRequest, ReconstructResponse } from '../../shared/butterfly.js'
+import { easternToTimestamp, marketDateOf, parseTimeOfDay, sessionClose } from '../../core/time/marketTime.js'
+import { availableRoots, buildButterfly } from '../../backtest/buildButterfly.js'
+import { reconstructButterfly } from '../../backtest/reconstruct.js'
+import { computeExcursions } from '../../backtest/excursions.js'
+import type { MissingDataPolicy } from '../../domain/butterfly.js'
 import { parseUnderlyingCsv } from '../../data/csv/csvImport.js'
 import { tradingDaysBetween } from '../../core/time/marketTime.js'
 import type {
@@ -79,6 +84,109 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   handle(IPC.massiveGetContracts, (query: ContractQuery) => services.provider.getContracts(query))
   handle(IPC.massiveGetOptionBars, (query: BarQuery) => services.provider.getOptionBars(query))
   handle(IPC.massiveGetUnderlyingBars, (query: BarQuery) => services.provider.getUnderlyingBars(query))
+
+  // --- butterfly reconstruction ---------------------------------------------
+  handle(IPC.butterflyChain, async (
+    underlying: string,
+    expiration: string,
+    optionType: 'call' | 'put'
+  ): Promise<ChainSummary> => {
+    const contracts = await services.provider.getContracts({
+      underlying,
+      expirationDate: expiration,
+      type: optionType,
+      expired: true
+    })
+    return {
+      expiration,
+      contracts,
+      roots: availableRoots(contracts),
+      strikes: [...new Set(contracts.map((c) => c.strike))].sort((a, b) => a - b)
+    }
+  })
+
+  handle(IPC.butterflyReconstruct, async (request: ReconstructRequest): Promise<ReconstructResponse> => {
+    const chain = await services.provider.getContracts({
+      underlying: request.underlying,
+      expirationDate: request.expiration,
+      type: request.optionType,
+      expired: true
+    })
+
+    // Throws rather than guessing when SPX and SPXW both list a strike.
+    const definition = buildButterfly(
+      {
+        underlying: request.underlying,
+        expiration: request.expiration,
+        optionType: request.optionType,
+        lowerStrike: request.lowerStrike,
+        centerStrike: request.centerStrike,
+        upperStrike: request.upperStrike,
+        ...(request.preferredRoot ? { preferredRoot: request.preferredRoot } : {}),
+        quantity: request.quantity
+      },
+      chain
+    )
+
+    const time = parseTimeOfDay(request.entryTime)
+    const entryTimestamp = easternToTimestamp(request.entryDate, time.hour, time.minute)
+    const exitTimestamp = sessionClose(request.expiration)
+
+    /*
+     * One request per leg covers the trade's whole life, because the cache
+     * batches contiguous missing days into a single upstream call. On a cold
+     * cache that is three Massive calls; warm, it is none.
+     */
+    const [lower, center, upper] = await Promise.all([
+      services.provider.getOptionBars({
+        ticker: definition.lowerTicker, from: request.entryDate, to: request.expiration, timespan: 'minute'
+      }),
+      services.provider.getOptionBars({
+        ticker: definition.centerTicker, from: request.entryDate, to: request.expiration, timespan: 'minute'
+      }),
+      services.provider.getOptionBars({
+        ticker: definition.upperTicker, from: request.entryDate, to: request.expiration, timespan: 'minute'
+      })
+    ])
+
+    // Underlying is read cache-only: index data is not entitled upstream, so a
+    // fetch here would spend a request to earn an HTTP 403.
+    const underlyingBars = await services.store.getUnderlyingBars(
+      'I:SPX',
+      tradingDaysBetween(request.entryDate, request.expiration)
+    )
+
+    const missingData: MissingDataPolicy =
+      request.missingDataMode === 'strict'
+        ? { mode: 'strict' }
+        : { mode: 'carryForward', maxStaleMinutes: request.maxStaleMinutes }
+
+    const series = reconstructButterfly({
+      definition,
+      legBars: { lower: lower.bars, center: center.bars, upper: upper.bars },
+      underlyingBars,
+      entryTimestamp,
+      exitTimestamp,
+      pricing: { model: request.pricingModel, slippage: request.slippage, missingData }
+    })
+
+    log.info('butterfly reconstructed', {
+      center: definition.centerStrike,
+      width: definition.wingWidth,
+      entry: request.entryDate,
+      expiration: request.expiration,
+      debit: series.entryDebit,
+      observations: series.observations.length,
+      coverage: series.quality.coverage
+    })
+
+    return {
+      series,
+      excursions: computeExcursions(series.observations),
+      legBarCounts: { lower: lower.bars.length, center: center.bars.length, upper: upper.bars.length },
+      hasUnderlying: underlyingBars.length > 0
+    }
+  })
 
   // --- Schwab (SPX underlying source) ---------------------------------------
   handle(IPC.schwabStatus, () => services.schwabStore.status())

@@ -43,6 +43,11 @@ const api: AppApi = {
     getOptionBars: (query) => invoke(IPC.massiveGetOptionBars, query),
     getUnderlyingBars: (query) => invoke(IPC.massiveGetUnderlyingBars, query)
   },
+  butterfly: {
+    chain: (underlying, expiration, optionType) =>
+      invoke(IPC.butterflyChain, underlying, expiration, optionType),
+    reconstruct: (request) => invoke(IPC.butterflyReconstruct, request)
+  },
   schwab: {
     status: () => invoke(IPC.schwabStatus),
     setCredentials: (credentials) => invoke(IPC.schwabSetCredentials, credentials),

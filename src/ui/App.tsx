@@ -6,6 +6,7 @@ import { DashboardPage } from './pages/DashboardPage.js'
 import { DataPage } from './pages/DataPage.js'
 import { ExplorerPage } from './pages/ExplorerPage.js'
 import { UnderlyingPage } from './pages/UnderlyingPage.js'
+import { TradeInspectorPage } from './pages/TradeInspectorPage.js'
 import { DiagnosticsPage } from './pages/DiagnosticsPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
 import { PlannedPage } from './pages/PlannedPage.js'
@@ -34,7 +35,7 @@ const NAV_GROUPS: { heading: string; items: NavItem[] }[] = [
       { to: '/run', label: 'Run Study', phase: 'Phase 8' },
       { to: '/results', label: 'Results', phase: 'Phase 8' },
       { to: '/compare', label: 'Compare', phase: 'Phase 9' },
-      { to: '/trade', label: 'Trade Inspector', phase: 'Phase 5' }
+      { to: '/trade', label: 'Trade Inspector' }
     ]
   },
   {
@@ -153,16 +154,7 @@ export function App() {
                 />
               }
             />
-            <Route
-              path="/trade"
-              element={
-                <PlannedPage
-                  title="Trade Inspector"
-                  phase="Phase 5"
-                  description="Per-trade SPX and butterfly P/L charts with strike overlays, MFE/MAE markers, and synchronized hover."
-                />
-              }
-            />
+            <Route path="/trade" element={<TradeInspectorPage />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </main>

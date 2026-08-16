@@ -30,6 +30,7 @@
     "src/core/**/*",
     "src/data/**/*",
     "src/database/**/*",
+    "src/backtest/**/*",
     "src/services/**/*",
     "src/shared/**/*",
     "electron.vite.config.ts",

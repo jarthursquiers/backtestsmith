@@ -3,6 +3,7 @@ import type { ContractQuery, OptionContract } from '../domain/contracts.js'
 import type { BarFetchResult, ProviderStatus } from './provider.js'
 import type { CacheStats } from './cache.js'
 import type { SchwabBackfillRequest, SchwabBackfillResult, SchwabConnectionStatus } from './schwab.js'
+import type { ChainSummary, ReconstructRequest, ReconstructResponse } from './butterfly.js'
 import type {
   CsvImportOptions,
   CsvImportResult,
@@ -35,6 +36,9 @@ export const IPC = {
   massiveGetContracts: 'massive:getContracts',
   massiveGetOptionBars: 'massive:getOptionBars',
   massiveGetUnderlyingBars: 'massive:getUnderlyingBars',
+
+  butterflyChain: 'butterfly:chain',
+  butterflyReconstruct: 'butterfly:reconstruct',
 
   schwabStatus: 'schwab:status',
   schwabSetCredentials: 'schwab:setCredentials',
@@ -102,6 +106,12 @@ export interface AppApi {
     getContracts(query: ContractQuery): Promise<OptionContract[]>
     getOptionBars(query: BarQuery): Promise<BarFetchResult<OptionBar>>
     getUnderlyingBars(query: BarQuery): Promise<BarFetchResult<UnderlyingBar>>
+  }
+  butterfly: {
+    /** Loads the option chain for an expiration, so strikes can be chosen. */
+    chain(underlying: string, expiration: string, optionType: 'call' | 'put'): Promise<ChainSummary>
+    /** Downloads the three legs if needed and reconstructs the lifecycle. */
+    reconstruct(request: ReconstructRequest): Promise<ReconstructResponse>
   }
   schwab: {
     status(): Promise<SchwabConnectionStatus>

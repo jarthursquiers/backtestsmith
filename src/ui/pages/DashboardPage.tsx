@@ -105,7 +105,7 @@ export function DashboardPage() {
               { phase: 'Phase 2', label: 'Massive client, rate limiter, contract lookup, minute aggregates', done: true },
               { phase: 'Phase 3', label: 'Local cache (DuckDB) so backtests never re-call Massive', done: true },
               { phase: 'Phase 4', label: 'SPX underlying history via CSV import (I:SPX not entitled on Options plans)', done: true },
-              { phase: 'Phase 5', label: 'Single butterfly reconstruction, minute by minute', done: false },
+              { phase: 'Phase 5', label: 'Single butterfly reconstruction, minute by minute', done: true },
               { phase: 'Phase 6', label: 'Single-trade management rules', done: false },
               { phase: 'Phase 7', label: 'Automated entry generation (9 EMA, 7 DTE, placement)', done: false },
               { phase: 'Phase 8', label: 'Batch backtester and summary statistics', done: false },
