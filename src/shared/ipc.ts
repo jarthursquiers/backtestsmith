@@ -2,6 +2,7 @@ import type { BarQuery, OptionBar, UnderlyingBar } from '../domain/bars.js'
 import type { ContractQuery, OptionContract } from '../domain/contracts.js'
 import type { BarFetchResult, ProviderStatus } from './provider.js'
 import type { CacheStats } from './cache.js'
+import type { SchwabBackfillRequest, SchwabBackfillResult, SchwabConnectionStatus } from './schwab.js'
 import type {
   CsvImportOptions,
   CsvImportResult,
@@ -34,6 +35,14 @@ export const IPC = {
   massiveGetContracts: 'massive:getContracts',
   massiveGetOptionBars: 'massive:getOptionBars',
   massiveGetUnderlyingBars: 'massive:getUnderlyingBars',
+
+  schwabStatus: 'schwab:status',
+  schwabSetCredentials: 'schwab:setCredentials',
+  schwabAuthorizeUrl: 'schwab:authorizeUrl',
+  schwabCompleteAuth: 'schwab:completeAuth',
+  schwabDisconnect: 'schwab:disconnect',
+  schwabTest: 'schwab:test',
+  schwabBackfill: 'schwab:backfill',
 
   underlyingPickFile: 'underlying:pickFile',
   underlyingPreviewCsv: 'underlying:previewCsv',
@@ -93,6 +102,18 @@ export interface AppApi {
     getContracts(query: ContractQuery): Promise<OptionContract[]>
     getOptionBars(query: BarQuery): Promise<BarFetchResult<OptionBar>>
     getUnderlyingBars(query: BarQuery): Promise<BarFetchResult<UnderlyingBar>>
+  }
+  schwab: {
+    status(): Promise<SchwabConnectionStatus>
+    setCredentials(credentials: { clientId?: string; clientSecret?: string; redirectUri?: string }): Promise<SchwabConnectionStatus>
+    /** Returns the URL to open in a browser to authorize. */
+    authorizeUrl(): Promise<string>
+    /** Completes the flow from the pasted redirect URL. */
+    completeAuth(redirectedUrl: string): Promise<SchwabConnectionStatus>
+    disconnect(): Promise<SchwabConnectionStatus>
+    test(): Promise<ProviderStatus>
+    /** Downloads a date range into the local cache. */
+    backfill(request: SchwabBackfillRequest): Promise<SchwabBackfillResult>
   }
   underlying: {
     /** Opens a native file picker. Returns null if cancelled. */

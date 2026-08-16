@@ -1,6 +1,14 @@
 import { readFileSync, statSync } from 'node:fs'
 import { basename } from 'node:path'
-import { app, dialog, ipcMain, type BrowserWindow } from 'electron'
+import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron'
+import { randomBytes } from 'node:crypto'
+import {
+  buildAuthorizeUrl,
+  exchangeAuthorizationCode,
+  extractAuthorizationCode
+} from '../../data/schwab/auth.js'
+import type { SchwabBackfillRequest, SchwabBackfillResult } from '../../shared/schwab.js'
+import { marketDateOf } from '../../core/time/marketTime.js'
 import { parseUnderlyingCsv } from '../../data/csv/csvImport.js'
 import { tradingDaysBetween } from '../../core/time/marketTime.js'
 import type {
@@ -71,6 +79,81 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   handle(IPC.massiveGetContracts, (query: ContractQuery) => services.provider.getContracts(query))
   handle(IPC.massiveGetOptionBars, (query: BarQuery) => services.provider.getOptionBars(query))
   handle(IPC.massiveGetUnderlyingBars, (query: BarQuery) => services.provider.getUnderlyingBars(query))
+
+  // --- Schwab (SPX underlying source) ---------------------------------------
+  handle(IPC.schwabStatus, () => services.schwabStore.status())
+
+  handle(IPC.schwabSetCredentials, (credentials: { clientId?: string; clientSecret?: string; redirectUri?: string }) => {
+    services.schwabStore.setCredentials(credentials)
+    return services.schwabStore.status()
+  })
+
+  handle(IPC.schwabAuthorizeUrl, async () => {
+    const credentials = services.schwabStore.credentials()
+    // State is a one-shot nonce; it round-trips through Schwab so a stale or
+    // foreign redirect can be spotted, though the desktop paste flow is manual.
+    const url = buildAuthorizeUrl(credentials, randomBytes(12).toString('hex'))
+    // Authorization must happen in the real browser, never inside the app: the
+    // user needs to see Schwab's own address bar and certificate to trust it.
+    await shell.openExternal(url)
+    return url
+  })
+
+  handle(IPC.schwabCompleteAuth, async (redirectedUrl: string) => {
+    const { code } = extractAuthorizationCode(redirectedUrl)
+    const tokens = await exchangeAuthorizationCode(services.schwabStore.credentials(), code)
+    services.schwabStore.setTokens(tokens)
+    log.info('Schwab connected', {
+      refreshTokenExpiresAt: new Date(tokens.refreshTokenExpiresAt).toISOString()
+    })
+    return services.schwabStore.status()
+  })
+
+  handle(IPC.schwabDisconnect, () => {
+    services.schwabStore.disconnect()
+    return services.schwabStore.status()
+  })
+
+  handle(IPC.schwabTest, () => services.schwab.testConnection())
+
+  handle(IPC.schwabBackfill, async (request: SchwabBackfillRequest): Promise<SchwabBackfillResult> => {
+    const before = services.schwabQueue.getStats().completed
+    const result = await services.schwab.getUnderlyingBars({
+      ticker: request.ticker,
+      from: request.from,
+      to: request.to,
+      timespan: request.timespan
+    })
+
+    // Record coverage only for sessions Schwab actually returned. Absence here
+    // is not evidence the index did not trade - it usually means the range is
+    // outside Schwab's retention - so it must not be recorded as a confirmed
+    // empty day, which would permanently suppress a later retry.
+    const datesWithBars = [...new Set(result.bars.map((b) => marketDateOf(b.timestamp)))].sort()
+
+    if (result.bars.length > 0) {
+      await services.store.putBars(
+        'underlying',
+        request.ticker,
+        datesWithBars,
+        result.bars,
+        { timespan: request.timespan, multiplier: 1 },
+        'schwab'
+      )
+    }
+
+    return {
+      ticker: request.ticker,
+      timespan: request.timespan,
+      barsWritten: result.bars.length,
+      sessionsWritten: datesWithBars.length,
+      dateRange:
+        datesWithBars.length > 0
+          ? { from: datesWithBars[0]!, to: datesWithBars[datesWithBars.length - 1]! }
+          : null,
+      requests: services.schwabQueue.getStats().completed - before
+    }
+  })
 
   // --- underlying (SPX) -----------------------------------------------------
   handle(IPC.underlyingPickFile, async (): Promise<string | null> => {

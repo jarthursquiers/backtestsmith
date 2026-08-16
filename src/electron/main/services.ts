@@ -5,6 +5,8 @@ import { CachedProvider } from '../../data/cachedProvider.js'
 import { MassiveClient } from '../../data/massive/client.js'
 import { MassiveProvider } from '../../data/massive/provider.js'
 import { RequestQueue } from '../../data/requestQueue.js'
+import { SchwabProvider } from '../../data/schwab/schwabProvider.js'
+import { SchwabStore } from '../../services/schwabStore.js'
 import type { OptionsHistoricalDataProvider } from '../../data/provider.js'
 import { Database } from '../../database/duckdb.js'
 import { MarketDataStore } from '../../database/marketDataStore.js'
@@ -29,6 +31,10 @@ export interface AppServices {
   provider: OptionsHistoricalDataProvider
   /** The raw Massive provider, retained for connectivity checks and diagnostics. */
   upstream: MassiveProvider
+  /** Underlying/index history. Schwab supplies SPX, which Massive will not. */
+  schwab: SchwabProvider
+  schwabStore: SchwabStore
+  schwabQueue: RequestQueue
   database: Database
   store: MarketDataStore
   dataDirectory: string
@@ -72,6 +78,18 @@ export async function initServices(): Promise<AppServices> {
 
   const provider = new CachedProvider(upstream, store)
 
+  // Schwab gets its own queue: its rate limits are unrelated to Massive's, and
+  // a Massive backlog must not stall an SPX backfill (or vice versa).
+  const schwabStore = new SchwabStore(join(userData, 'schwab-credentials.bin'))
+  const schwabQueue = new RequestQueue({ requestsPerMinute: 100, maxConcurrent: 2, maxRetries: 3 })
+  const schwab = new SchwabProvider({
+    getCredentials: () => schwabStore.credentials(),
+    queue: schwabQueue,
+    getTokens: () => schwabStore.getTokens(),
+    saveTokens: (tokens) => schwabStore.setTokens(tokens),
+    timeoutMs: current.massive.timeoutMs
+  })
+
   services = {
     settings,
     secrets,
@@ -79,6 +97,9 @@ export async function initServices(): Promise<AppServices> {
     client,
     provider,
     upstream,
+    schwab,
+    schwabStore,
+    schwabQueue,
     database,
     store,
     dataDirectory,

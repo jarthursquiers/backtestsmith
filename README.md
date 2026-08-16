@@ -175,9 +175,47 @@ returns:
 HTTP 403 - You are not entitled to this data. Please upgrade your plan.
 ```
 
-CSV import is therefore the primary acquisition path for SPX, not a fallback.
-The Massive index path remains implemented and isolated, so upgrading the plan
+SPX therefore comes from **Schwab**, with CSV import as an alternative. The
+Massive index path remains implemented and isolated, so upgrading that plan
 would enable it with no code changes.
+
+### Schwab
+
+Endpoints verified against the working Optionsmith implementation in
+`../kingarthurtrader` rather than guessed:
+
+| Item | Value |
+| --- | --- |
+| Price history | `GET api.schwabapi.com/marketdata/v1/pricehistory` |
+| SPX symbol | `$SPX` (SPX / SPXW / SPXQ / SPXPM all map to it) |
+| Authorize | `api.schwabapi.com/v1/oauth/authorize` |
+| Token | `api.schwabapi.com/v1/oauth/token`, HTTP Basic `base64(id:secret)` |
+| Access token | ~30 minutes, refreshed automatically |
+| Refresh token | **hard 7-day expiry, not rotated** |
+| Minute constraint | `periodType=day` is the only type valid with `frequencyType=minute` |
+
+Three consequences shape the implementation:
+
+- **Minute requests are chunked into 10-day windows**, since `periodType=day`
+  caps the span. A long backfill becomes many requests rather than one silently
+  truncated one.
+- **Re-authorization is required weekly.** Refreshing mints a new access token
+  but does not extend the 7-day refresh window, so the UI counts down honestly
+  rather than implying the connection is indefinite. This matters less than it
+  sounds: SPX history is downloaded once into the local cache and reused.
+- **Authorization is manual by design.** Schwab redirects to a registered
+  `https://127.0.0.1` callback that nothing is listening on; the user copies the
+  resulting address bar contents back into the app. Running a local HTTPS server
+  would mean a self-signed certificate and training the user to click through
+  browser security warnings.
+
+Schwab uses its own request queue, because its rate limits are unrelated to
+Massive's and a backlog on one must not stall the other.
+
+A Schwab backfill records coverage **only for sessions that actually returned
+bars**. An empty response there is not evidence the index did not trade - it
+usually means the range is outside Schwab's retention - so it is never recorded
+as a confirmed-empty day, which would permanently suppress a retry.
 
 The importer auto-detects delimiter and column mapping, accepts ISO, US-style,
 and epoch timestamps, and tolerates thousands separators and quoted fields. Two

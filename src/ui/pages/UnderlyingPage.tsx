@@ -16,6 +16,7 @@ import {
   StatTile
 } from '../components/primitives.js'
 import { BarSeriesChart } from '../charts/BarSeriesChart.js'
+import { SchwabConnect } from '../components/SchwabConnect.js'
 import { fmtBytes, fmtEasternDateTime, fmtEasternTime, fmtInt, fmtPrice, shiftDate, todayEastern } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
 
@@ -94,11 +95,13 @@ export function UnderlyingPage() {
       />
 
       <div className="flex-1 space-y-4 overflow-y-auto p-6">
-        <Notice tone="warn">
-          Massive&apos;s Options plans do not include index data: a request for <code className="num">I:SPX</code>{' '}
-          returns HTTP 403 &ldquo;not entitled&rdquo;. Import SPX history from CSV here, or upgrade to a plan
-          with index access — the provider path already works and will be used automatically once entitled.
+        <Notice tone="info">
+          Massive&apos;s Options plans do not include index data &mdash; <code className="num">I:SPX</code>{' '}
+          returns HTTP 403 &ldquo;not entitled&rdquo;. SPX therefore comes from Schwab below, with CSV import
+          as an alternative.
         </Notice>
+
+        <SchwabConnect onDataChanged={() => void refreshCoverage()} />
 
         <Card
           title="Cached underlying data"

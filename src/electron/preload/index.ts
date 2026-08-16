@@ -43,6 +43,15 @@ const api: AppApi = {
     getOptionBars: (query) => invoke(IPC.massiveGetOptionBars, query),
     getUnderlyingBars: (query) => invoke(IPC.massiveGetUnderlyingBars, query)
   },
+  schwab: {
+    status: () => invoke(IPC.schwabStatus),
+    setCredentials: (credentials) => invoke(IPC.schwabSetCredentials, credentials),
+    authorizeUrl: () => invoke(IPC.schwabAuthorizeUrl),
+    completeAuth: (redirectedUrl) => invoke(IPC.schwabCompleteAuth, redirectedUrl),
+    disconnect: () => invoke(IPC.schwabDisconnect),
+    test: () => invoke(IPC.schwabTest),
+    backfill: (request) => invoke(IPC.schwabBackfill, request)
+  },
   underlying: {
     pickFile: () => invoke(IPC.underlyingPickFile),
     previewCsv: (filePath, options) => invoke(IPC.underlyingPreviewCsv, filePath, options),
