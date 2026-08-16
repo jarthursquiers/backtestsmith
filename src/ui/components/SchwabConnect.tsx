@@ -13,13 +13,60 @@ import { useAsyncAction } from '../lib/hooks.js'
  * that URL back avoids running a local HTTPS server with a self-signed
  * certificate, which would train the user to click through security warnings.
  */
+/**
+ * One numbered step in the connection flow.
+ *
+ * Steps are always rendered, including ones that are not yet reachable. An
+ * earlier version hid step 2 until step 1 was saved, which made the
+ * authorization step appear not to exist at all.
+ */
+function StepPanel({
+  index,
+  title,
+  done,
+  active,
+  children
+}: {
+  index: number
+  title: string
+  done: boolean
+  active: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <div
+      className={`rounded-md border p-3 transition ${
+        active ? 'border-accent/40 bg-surface-2' : 'border-line-soft bg-surface-2/40'
+      }`}
+    >
+      <div className="mb-2 flex items-center gap-2">
+        <span
+          className={`num flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-semibold ${
+            done
+              ? 'bg-gain/20 text-gain'
+              : active
+                ? 'bg-accent/20 text-accent'
+                : 'bg-line text-ink-faint'
+          }`}
+        >
+          {done ? '✓' : index}
+        </span>
+        <span className={`text-[12px] font-medium ${active || done ? 'text-ink' : 'text-ink-faint'}`}>
+          {title}
+        </span>
+      </div>
+      <div className={active || done ? '' : 'opacity-60'}>{children}</div>
+    </div>
+  )
+}
+
 export function SchwabConnect({ onDataChanged }: { onDataChanged: () => void }) {
   const [status, setStatus] = useState<SchwabConnectionStatus | null>(null)
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
   const [redirectUri, setRedirectUri] = useState('https://127.0.0.1:5173/callback')
   const [redirectedUrl, setRedirectedUrl] = useState('')
-  const [authStarted, setAuthStarted] = useState(false)
+  const [editingCredentials, setEditingCredentials] = useState(false)
 
   const [ticker, setTicker] = useState('I:SPX')
   const [timespan, setTimespan] = useState<'minute' | 'day'>('day')
@@ -39,20 +86,16 @@ export function SchwabConnect({ onDataChanged }: { onDataChanged: () => void }) 
     const next = await window.api.schwab.setCredentials({ clientId, clientSecret, redirectUri })
     setStatus(next)
     setClientSecret('')
+    setEditingCredentials(false)
     return next
   })
 
-  const [authUrlState, startAuth] = useAsyncAction(async () => {
-    const url = await window.api.schwab.authorizeUrl()
-    setAuthStarted(true)
-    return url
-  })
+  const [authUrlState, startAuth] = useAsyncAction(() => window.api.schwab.authorizeUrl())
 
   const [completeState, completeAuth] = useAsyncAction(async () => {
     const next = await window.api.schwab.completeAuth(redirectedUrl)
     setStatus(next)
     setRedirectedUrl('')
-    setAuthStarted(false)
     return next
   })
 
@@ -124,88 +167,115 @@ export function SchwabConnect({ onDataChanged }: { onDataChanged: () => void }) 
           )}
 
           {!status?.connected && (
-            <>
-              {!status?.hasCredentials && (
-                <div className="grid gap-3 md:grid-cols-3">
-                  <Field label="Client ID">
-                    <Input value={clientId} onChange={(e) => setClientId(e.target.value)} spellCheck={false} />
-                  </Field>
-                  <Field label="Client secret" hint="Encrypted with the OS keystore; never logged">
-                    <Input
-                      type="password"
-                      value={clientSecret}
-                      onChange={(e) => setClientSecret(e.target.value)}
-                      spellCheck={false}
-                    />
-                  </Field>
-                  <Field label="Callback URL" hint="Must exactly match one registered for the app">
-                    <Input value={redirectUri} onChange={(e) => setRedirectUri(e.target.value)} spellCheck={false} />
-                  </Field>
-                </div>
-              )}
-
-              {!status?.hasCredentials && (
-                <div>
-                  <Button
-                    variant="primary"
-                    onClick={() => void saveCredentials()}
-                    disabled={saveState.loading || !clientId.trim() || !clientSecret.trim()}
-                  >
-                    Save credentials
-                  </Button>
-                  {saveState.error && (
-                    <div className="mt-2">
-                      <Notice tone="error">{saveState.error}</Notice>
+            <div className="space-y-3">
+              {/*
+                Both steps are always visible. Hiding step 2 until step 1 was
+                saved made the authorization step look like it did not exist.
+              */}
+              <StepPanel
+                index={1}
+                title="Application credentials"
+                done={Boolean(status?.hasCredentials)}
+                active={!status?.hasCredentials || editingCredentials}
+              >
+                {status?.hasCredentials && !editingCredentials ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] text-ink-dim">
+                      Saved for client {status.clientIdHint}
+                    </span>
+                    <span className="num text-[10px] text-ink-faint">{status.redirectUri}</span>
+                    {/* Without this there is no way to correct a mistyped key. */}
+                    <Button onClick={() => setEditingCredentials(true)}>Change</Button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <Field label="Client ID">
+                        <Input value={clientId} onChange={(e) => setClientId(e.target.value)} spellCheck={false} />
+                      </Field>
+                      <Field label="Client secret" hint="Encrypted with the OS keystore; never logged">
+                        <Input
+                          type="password"
+                          value={clientSecret}
+                          onChange={(e) => setClientSecret(e.target.value)}
+                          spellCheck={false}
+                        />
+                      </Field>
+                      <Field label="Callback URL" hint="Must exactly match one registered for the app">
+                        <Input
+                          value={redirectUri}
+                          onChange={(e) => setRedirectUri(e.target.value)}
+                          spellCheck={false}
+                        />
+                      </Field>
                     </div>
-                  )}
-                </div>
-              )}
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="primary"
+                        onClick={() => void saveCredentials()}
+                        disabled={saveState.loading || !clientId.trim() || !clientSecret.trim()}
+                      >
+                        {saveState.loading && <Spinner />}
+                        Save credentials
+                      </Button>
+                      {editingCredentials && (
+                        <Button onClick={() => setEditingCredentials(false)}>Cancel</Button>
+                      )}
+                    </div>
+                    {saveState.error && <Notice tone="error">{saveState.error}</Notice>}
+                  </div>
+                )}
+              </StepPanel>
 
-              {status?.hasCredentials && (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
+              <StepPanel
+                index={2}
+                title="Authorize with Schwab"
+                done={false}
+                active={Boolean(status?.hasCredentials) && !editingCredentials}
+              >
+                {!status?.hasCredentials ? (
+                  <p className="text-[11px] text-ink-faint">
+                    Save your application credentials above to enable this step.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-[11px] leading-relaxed text-ink-dim">
+                      This opens Schwab in your browser to approve access. You will be redirected to{' '}
+                      <code className="num">{status.redirectUri}</code>, which will fail to load &mdash; that is
+                      expected, since nothing is listening there. Copy the whole address from the browser and
+                      paste it below.
+                    </p>
+
                     <Button variant="primary" onClick={() => void startAuth()} disabled={authUrlState.loading}>
                       {authUrlState.loading && <Spinner />}
-                      Authorize in browser
+                      Open Schwab authorization
                     </Button>
-                    {status.redirectUri && (
-                      <span className="num text-[10px] text-ink-faint">→ {status.redirectUri}</span>
-                    )}
-                  </div>
 
-                  {authUrlState.error && <Notice tone="error">{authUrlState.error}</Notice>}
+                    {authUrlState.error && <Notice tone="error">{authUrlState.error}</Notice>}
 
-                  {authStarted && (
-                    <div className="space-y-2 rounded-md border border-line bg-surface-2 p-3">
-                      <p className="text-[11px] leading-relaxed text-ink-dim">
-                        Approve access in the browser. Schwab will then redirect to{' '}
-                        <code className="num">{status.redirectUri}</code>, which will fail to load — that is
-                        expected, since nothing is listening there. Copy the entire address from the browser&apos;s
-                        address bar and paste it below.
-                      </p>
+                    <Field label="Redirected URL" hint="Paste the full address bar contents after approving">
                       <Input
                         value={redirectedUrl}
                         onChange={(e) => setRedirectedUrl(e.target.value)}
                         placeholder="https://127.0.0.1:5173/callback?code=...&session=..."
                         spellCheck={false}
                       />
-                      <div className="flex gap-2">
-                        <Button
-                          variant="primary"
-                          onClick={() => void completeAuth()}
-                          disabled={completeState.loading || redirectedUrl.trim().length === 0}
-                        >
-                          {completeState.loading && <Spinner />}
-                          Complete connection
-                        </Button>
-                        <Button onClick={() => setAuthStarted(false)}>Cancel</Button>
-                      </div>
-                      {completeState.error && <Notice tone="error">{completeState.error}</Notice>}
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
+                    </Field>
+
+                    <Button
+                      variant="primary"
+                      onClick={() => void completeAuth()}
+                      disabled={completeState.loading || redirectedUrl.trim().length === 0}
+                    >
+                      {completeState.loading && <Spinner />}
+                      Complete connection
+                    </Button>
+
+                    {completeState.error && <Notice tone="error">{completeState.error}</Notice>}
+                  </div>
+                )}
+              </StepPanel>
+            </div>
           )}
         </div>
       </Card>
