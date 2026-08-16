@@ -12,8 +12,8 @@ import {
   Spinner,
   StatTile
 } from '../components/primitives.js'
-import { fmtCountdown } from '../lib/format.js'
-import { useAsyncAction, useNow, useQueueStats } from '../lib/hooks.js'
+import { fmtBytes, fmtCountdown, fmtInt } from '../lib/format.js'
+import { useAsyncAction, useCacheStats, useNow, useQueueStats } from '../lib/hooks.js'
 
 export function DataPage() {
   const [keyInput, setKeyInput] = useState('')
@@ -23,6 +23,8 @@ export function DataPage() {
 
   const stats = useQueueStats()
   const now = useNow(1000)
+  const [cache, refreshCache] = useCacheStats()
+  const [confirmClear, setConfirmClear] = useState(false)
 
   const refresh = useCallback(async () => {
     const [status, current] = await Promise.all([window.api.secrets.status(), window.api.settings.get()])
@@ -230,12 +232,82 @@ export function DataPage() {
         </Card>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          <Card title="Local cache" subtitle="Planned for Phase 3">
-            <p className="text-[11px] leading-relaxed text-ink-faint">
-              Downloaded contracts and minute bars will be persisted locally (DuckDB / Parquet) and reused
-              indefinitely, so the research engine never re-calls Massive for data it already has. This screen
-              will show cached date ranges, contract and bar counts, storage size, and cache rebuild controls.
-            </p>
+          <Card
+            title="Local cache"
+            subtitle="Downloaded data is stored in DuckDB and reused indefinitely. Massive is called only for ranges the cache has never been asked about."
+            actions={
+              confirmClear ? (
+                <div className="flex gap-2">
+                  <Button
+                    variant="danger"
+                    onClick={() => {
+                      void window.api.cache.clear().then(() => {
+                        setConfirmClear(false)
+                        void refreshCache()
+                      })
+                    }}
+                  >
+                    Confirm delete
+                  </Button>
+                  <Button onClick={() => setConfirmClear(false)}>Cancel</Button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <Button onClick={() => void refreshCache()}>Refresh</Button>
+                  <Button
+                    variant="danger"
+                    onClick={() => setConfirmClear(true)}
+                    disabled={!cache || cache.optionBars + cache.optionContracts === 0}
+                  >
+                    Delete cache
+                  </Button>
+                </div>
+              )
+            }
+          >
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <StatTile label="Contracts" value={fmtInt(cache?.optionContracts ?? 0)} />
+                <StatTile
+                  label="Option bars"
+                  value={fmtInt(cache?.optionBars ?? 0)}
+                  hint={cache ? `${fmtInt(cache.distinctOptionTickers)} tickers` : undefined}
+                />
+                <StatTile label="Underlying bars" value={fmtInt(cache?.underlyingBars ?? 0)} />
+                <StatTile label="On disk" value={fmtBytes(cache?.databaseBytes ?? 0)} />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+                <StatTile
+                  label="Contract-days held"
+                  value={fmtInt(cache?.coveredOptionDays ?? 0)}
+                  hint="days already downloaded"
+                />
+                <StatTile
+                  label="Confirmed empty"
+                  value={fmtInt(cache?.emptyOptionDays ?? 0)}
+                  tone={cache && cache.emptyOptionDays > 0 ? 'warn' : 'neutral'}
+                  hint="no qualifying trades"
+                />
+                <StatTile
+                  label="Date range"
+                  value={cache?.earliestDate ? `${cache.earliestDate}` : '—'}
+                  hint={cache?.latestDate ? `through ${cache.latestDate}` : undefined}
+                />
+              </div>
+
+              {confirmClear && (
+                <Notice tone="warn">
+                  This permanently deletes all cached contracts and bars. Re-downloading them is limited by your
+                  Massive rate limit, which on the free tier is roughly 5 calls per minute.
+                </Notice>
+              )}
+
+              <p className="text-[10px] leading-relaxed text-ink-faint">
+                A day recorded as <em>confirmed empty</em> is one Massive was asked about and returned no bars
+                for. That is tracked deliberately, so a contract that did not trade is never re-requested.
+              </p>
+            </div>
           </Card>
 
           <Card title="SPX underlying import" subtitle="Planned for Phase 4">

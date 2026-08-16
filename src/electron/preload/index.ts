@@ -43,6 +43,10 @@ const api: AppApi = {
     getOptionBars: (query) => invoke(IPC.massiveGetOptionBars, query),
     getUnderlyingBars: (query) => invoke(IPC.massiveGetUnderlyingBars, query)
   },
+  cache: {
+    stats: () => invoke(IPC.cacheStats),
+    clear: () => invoke(IPC.cacheClear)
+  },
   queue: {
     stats: () => invoke(IPC.queueStats),
     pause: () => invoke(IPC.queuePause),

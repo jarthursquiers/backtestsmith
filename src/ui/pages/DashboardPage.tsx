@@ -3,12 +3,14 @@ import { Link } from 'react-router-dom'
 import type { AppInfo } from '../../shared/ipc.js'
 import type { SecretStatus } from '../../shared/secrets.js'
 import { Badge, Button, Card, PageHeader, Spinner, StatTile } from '../components/primitives.js'
-import { useAsyncAction } from '../lib/hooks.js'
+import { fmtBytes, fmtInt } from '../lib/format.js'
+import { useAsyncAction, useCacheStats } from '../lib/hooks.js'
 
 export function DashboardPage() {
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [secretStatus, setSecretStatus] = useState<SecretStatus | null>(null)
   const [testState, runTest] = useAsyncAction(() => window.api.massive.testConnection())
+  const [cache] = useCacheStats()
 
   useEffect(() => {
     void window.api.app.info().then(setInfo)
@@ -101,7 +103,7 @@ export function DashboardPage() {
             {[
               { phase: 'Phase 1', label: 'Electron + React + TypeScript skeleton, settings, secure API key', done: true },
               { phase: 'Phase 2', label: 'Massive client, rate limiter, contract lookup, minute aggregates', done: true },
-              { phase: 'Phase 3', label: 'Local cache (DuckDB / Parquet) so backtests never re-call Massive', done: false },
+              { phase: 'Phase 3', label: 'Local cache (DuckDB) so backtests never re-call Massive', done: true },
               { phase: 'Phase 4', label: 'SPX underlying history (I:SPX) plus CSV import fallback', done: false },
               { phase: 'Phase 5', label: 'Single butterfly reconstruction, minute by minute', done: false },
               { phase: 'Phase 6', label: 'Single-trade management rules', done: false },

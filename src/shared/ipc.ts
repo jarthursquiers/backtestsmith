@@ -1,6 +1,7 @@
 import type { BarQuery, OptionBar, UnderlyingBar } from '../domain/bars.js'
 import type { ContractQuery, OptionContract } from '../domain/contracts.js'
 import type { BarFetchResult, ProviderStatus } from './provider.js'
+import type { CacheStats } from './cache.js'
 import type { QueueStats } from './queue.js'
 import type { LogLevel, LogRecord } from './logging.js'
 import type { SecretStatus } from './secrets.js'
@@ -27,6 +28,9 @@ export const IPC = {
   massiveGetContracts: 'massive:getContracts',
   massiveGetOptionBars: 'massive:getOptionBars',
   massiveGetUnderlyingBars: 'massive:getUnderlyingBars',
+
+  cacheStats: 'cache:stats',
+  cacheClear: 'cache:clear',
 
   queueStats: 'queue:stats',
   queuePause: 'queue:pause',
@@ -77,6 +81,11 @@ export interface AppApi {
     getContracts(query: ContractQuery): Promise<OptionContract[]>
     getOptionBars(query: BarQuery): Promise<BarFetchResult<OptionBar>>
     getUnderlyingBars(query: BarQuery): Promise<BarFetchResult<UnderlyingBar>>
+  }
+  cache: {
+    stats(): Promise<CacheStats>
+    /** Wipes cached market data. Schema is preserved. */
+    clear(): Promise<CacheStats>
   }
   queue: {
     stats(): Promise<QueueStats>

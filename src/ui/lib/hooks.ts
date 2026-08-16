@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { QueueStats } from '../../shared/queue.js'
 import type { LogRecord } from '../../shared/logging.js'
+import type { CacheStats } from '../../shared/cache.js'
 
 /**
  * Async action state. Pages use this instead of hand-rolling
@@ -101,4 +102,23 @@ export function useNow(intervalMs = 1000): number {
     return () => clearInterval(timer)
   }, [intervalMs])
   return now
+}
+
+/** Local cache statistics, refreshable after a download or a clear. */
+export function useCacheStats(): [CacheStats | null, () => Promise<void>] {
+  const [stats, setStats] = useState<CacheStats | null>(null)
+
+  const refresh = useCallback(async () => {
+    try {
+      setStats(await window.api.cache.stats())
+    } catch {
+      setStats(null)
+    }
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  return [stats, refresh]
 }

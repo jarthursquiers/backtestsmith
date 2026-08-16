@@ -18,8 +18,8 @@ Built in verifiable phases. **Phases 1 and 2 are complete.**
 | --- | --- | --- |
 | 1 | Electron + React + TypeScript skeleton, routing, settings, secure API key | Done |
 | 2 | Massive API client, rate limiter, contract lookup, minute aggregates, dev UI | Done |
-| 3 | Local cache (DuckDB / Parquet) so backtests never re-call Massive | Next |
-| 4 | SPX underlying history (`I:SPX`) plus CSV import fallback | Planned |
+| 3 | Local cache (DuckDB) so backtests never re-call Massive | Done |
+| 4 | SPX underlying history (`I:SPX`) plus CSV import fallback | Next |
 | 5 | Single butterfly reconstruction, minute by minute | Planned |
 | 6 | Single-trade management rules | Planned |
 | 7 | Automated entry generation (9 EMA, 7 DTE, placement) | Planned |
@@ -109,10 +109,62 @@ subtracting raw timestamps.
 milliseconds; every market decision converts through `core/time`, which handles
 DST transitions, weekends, holidays, ad-hoc closures, and 1:00 PM half sessions.
 
-**SPX and SPXW settle differently.** Standard monthly SPX is AM-settled and stops
-trading at the Thursday close; SPXW weeklies are PM-settled on Friday. The
-provider decodes the root and records settlement on each contract, because a
-hold-to-expiration assumption differs between them.
+**SPX and SPXW settle differently, and both exist at the same strike.** Standard
+monthly SPX is AM-settled and stops trading at the Thursday close; SPXW weeklies
+are PM-settled on Friday. On third-Friday monthly expirations *both roots are
+listed at every strike* - verified against live data for 2025-06-20, which
+returned 970 SPX/AM and 946 SPXW/PM contracts, including two distinct 5875 puts:
+
+```
+O:SPX250620P05875000    root=SPX   settlement=am
+O:SPXW250620P05875000   root=SPXW  settlement=pm
+```
+
+Selecting a butterfly leg by strike alone is therefore ambiguous on those dates
+and can silently pick an AM-settled monthly that stops trading a day early. The
+provider decodes the root and records settlement on every contract so leg
+selection can disambiguate. Near-the-money SPXW strikes are spaced 5 points
+apart, so every candidate wing width from 10 to 50 is constructible.
+
+## Local cache
+
+Downloaded data is stored in DuckDB under the configured data directory and
+reused indefinitely. Massive is called only for ranges the cache has never been
+asked about, which is what makes the research loop viable: at five calls per
+minute, re-fetching a three-leg butterfly on every run would cost roughly 36
+seconds per trade.
+
+Two storage conventions exist to make timezone bugs impossible rather than
+merely unlikely:
+
+- **Market dates are ISO `YYYY-MM-DD` strings, always Eastern** - never DATE
+  columns, because each DATE round-trip risks an implicit UTC shift.
+- **Timestamps are BIGINT epoch milliseconds, UTC.** Conversion to Eastern
+  happens once, in `core/time`, never in SQL.
+
+### The coverage ledger
+
+`bar_coverage` records, per (ticker, date, bar shape), that the provider *was
+asked* and how many bars came back. This is what distinguishes "never
+requested" from "requested, and the contract genuinely had no qualifying
+trades". Both look identical in a bars table - zero rows - so without the ledger
+every silent day would be re-requested forever. A row with `bar_count = 0` is a
+positive assertion of emptiness. `contract_coverage` does the same for option
+chains.
+
+Because of this, a contract that never traded costs exactly one request, ever.
+
+### Caching strategy
+
+- Contract chains are fetched **whole** for an expiration, ignoring the caller's
+  strike filters, then filtered locally. A partial chain behind a "covered"
+  marker would be a lie, and butterfly construction needs many strikes anyway.
+- Bar gaps are batched into **one request per contiguous run of missing trading
+  days**, not one per day. A 7-DTE contract's entire life is ~2,700 minute bars,
+  far under the 50,000 limit, so its full history costs a single call.
+- Writes are delete-then-insert per day inside a transaction, so re-downloading
+  a day is idempotent.
+- Weekends and holidays are never fetched and never recorded as gaps.
 
 ## Massive API integration
 

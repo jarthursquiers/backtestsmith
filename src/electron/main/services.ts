@@ -1,8 +1,14 @@
+import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
+import { CachedProvider } from '../../data/cachedProvider.js'
 import { MassiveClient } from '../../data/massive/client.js'
 import { MassiveProvider } from '../../data/massive/provider.js'
 import { RequestQueue } from '../../data/requestQueue.js'
+import type { OptionsHistoricalDataProvider } from '../../data/provider.js'
+import { Database } from '../../database/duckdb.js'
+import { MarketDataStore } from '../../database/marketDataStore.js'
+import type { CacheStats } from '../../shared/cache.js'
 import { createLogger, logStore } from '../../services/logger.js'
 import { SecretStore } from '../../services/secrets.js'
 import { SettingsStore, resolveDataDirectory } from '../../services/settings.js'
@@ -19,9 +25,14 @@ export interface AppServices {
   secrets: SecretStore
   queue: RequestQueue
   client: MassiveClient
-  provider: MassiveProvider
+  /** Cache-first provider. Everything in the app should use this, not `upstream`. */
+  provider: OptionsHistoricalDataProvider
+  /** The raw Massive provider, retained for connectivity checks and diagnostics. */
+  upstream: MassiveProvider
+  database: Database
+  store: MarketDataStore
   dataDirectory: string
-  /** Re-reads settings and applies anything that affects live services. */
+  cacheStats(): Promise<CacheStats>
   applySettings(): void
 }
 
@@ -32,7 +43,7 @@ export function getServices(): AppServices {
   return services
 }
 
-export function initServices(): AppServices {
+export async function initServices(): Promise<AppServices> {
   const userData = app.getPath('userData')
   const settings = new SettingsStore(join(userData, 'settings.json'))
   const secrets = new SecretStore(join(userData, 'massive-api-key.bin'))
@@ -52,8 +63,14 @@ export function initServices(): AppServices {
     timeoutMs: current.massive.timeoutMs
   })
 
-  const provider = new MassiveProvider(client)
+  const upstream = new MassiveProvider(client)
   const dataDirectory = resolveDataDirectory(current, userData)
+
+  const database = new Database(join(dataDirectory, 'market-data.duckdb'))
+  await database.open()
+  const store = new MarketDataStore(database)
+
+  const provider = new CachedProvider(upstream, store)
 
   services = {
     settings,
@@ -61,7 +78,19 @@ export function initServices(): AppServices {
     queue,
     client,
     provider,
+    upstream,
+    database,
+    store,
     dataDirectory,
+    async cacheStats(): Promise<CacheStats> {
+      let bytes = 0
+      try {
+        bytes = statSync(database.path).size
+      } catch {
+        // The file does not exist until the first write; zero is correct then.
+      }
+      return store.stats(bytes)
+    },
     applySettings(): void {
       const next = settings.read()
       logStore.setMinLevel(next.logLevel)
@@ -74,9 +103,16 @@ export function initServices(): AppServices {
   log.info('services initialized', {
     userData,
     dataDirectory,
+    database: database.path,
     requestsPerMinute: current.massive.requestsPerMinute,
     apiKey: keyStatus.present ? `present (${keyStatus.source})` : 'not configured'
   })
 
   return services
+}
+
+export async function disposeServices(): Promise<void> {
+  if (!services) return
+  await services.database.close()
+  services = null
 }

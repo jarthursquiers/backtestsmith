@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { BrowserWindow, app, shell } from 'electron'
 import { createLogger } from '../../services/logger.js'
 import { registerIpcHandlers } from './ipc.js'
-import { initServices } from './services.js'
+import { disposeServices, initServices } from './services.js'
 
 const log = createLogger('main')
 
@@ -47,10 +47,12 @@ function createWindow(): BrowserWindow {
   return window
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   app.setAppUserModelId('com.backtestsmith.app')
 
-  initServices()
+  // Opening the database is async, so the window is created only once the
+  // cache is ready and the renderer cannot query a half-initialized store.
+  await initServices()
   registerIpcHandlers(() => mainWindow)
 
   mainWindow = createWindow()
@@ -67,6 +69,10 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('before-quit', () => {
+  void disposeServices()
 })
 
 process.on('uncaughtException', (error) => {

@@ -29,6 +29,7 @@
     "src/domain/**/*",
     "src/core/**/*",
     "src/data/**/*",
+    "src/database/**/*",
     "src/services/**/*",
     "src/shared/**/*",
     "electron.vite.config.ts",

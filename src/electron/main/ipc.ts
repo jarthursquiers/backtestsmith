@@ -57,10 +57,17 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   })
 
   // --- Massive --------------------------------------------------------------
-  handle(IPC.massiveTestConnection, () => services.provider.testConnection())
+  handle(IPC.massiveTestConnection, () => services.upstream.testConnection())
   handle(IPC.massiveGetContracts, (query: ContractQuery) => services.provider.getContracts(query))
   handle(IPC.massiveGetOptionBars, (query: BarQuery) => services.provider.getOptionBars(query))
   handle(IPC.massiveGetUnderlyingBars, (query: BarQuery) => services.provider.getUnderlyingBars(query))
+
+  // --- cache ----------------------------------------------------------------
+  handle(IPC.cacheStats, () => services.cacheStats())
+  handle(IPC.cacheClear, async () => {
+    await services.store.clear()
+    return services.cacheStats()
+  })
 
   // --- queue ----------------------------------------------------------------
   handle(IPC.queueStats, () => services.queue.getStats())

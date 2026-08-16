@@ -16,6 +16,7 @@
     "package": "npm run build && electron-builder --win --dir"
   },
   "dependencies": {
+    "@duckdb/node-api": "^1.5.5-r.4",
     "luxon": "^3.7.2",
     "zod": "^4.4.3"
   },
