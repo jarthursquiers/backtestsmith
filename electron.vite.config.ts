@@ -26,7 +26,10 @@ export default defineConfig({
     }
   },
   renderer: {
-    root: resolve('src/renderer'),
+    // The dev server can only serve files under its root, so the root must
+    // contain the renderer entry HTML and all UI source. Rolling up a
+    // ../ui/main.tsx entry works in `build` but 404s in `dev`.
+    root: resolve('src/ui'),
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
@@ -37,7 +40,7 @@ export default defineConfig({
       }
     },
     build: {
-      rollupOptions: { input: { index: resolve('src/renderer/index.html') } }
+      rollupOptions: { input: { index: resolve('src/ui/index.html') } }
     }
   }
 })
