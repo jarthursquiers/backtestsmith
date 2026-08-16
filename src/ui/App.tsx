@@ -5,6 +5,7 @@ import { QueueIndicator } from './components/QueueIndicator.js'
 import { DashboardPage } from './pages/DashboardPage.js'
 import { DataPage } from './pages/DataPage.js'
 import { ExplorerPage } from './pages/ExplorerPage.js'
+import { UnderlyingPage } from './pages/UnderlyingPage.js'
 import { DiagnosticsPage } from './pages/DiagnosticsPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
 import { PlannedPage } from './pages/PlannedPage.js'
@@ -28,6 +29,7 @@ const NAV_GROUPS: { heading: string; items: NavItem[] }[] = [
     heading: 'Research',
     items: [
       { to: '/explorer', label: 'Contract Explorer' },
+      { to: '/underlying', label: 'SPX Underlying' },
       { to: '/strategy', label: 'Strategy', phase: 'Phase 7' },
       { to: '/run', label: 'Run Study', phase: 'Phase 8' },
       { to: '/results', label: 'Results', phase: 'Phase 8' },
@@ -108,6 +110,7 @@ export function App() {
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/data" element={<DataPage />} />
             <Route path="/explorer" element={<ExplorerPage />} />
+            <Route path="/underlying" element={<UnderlyingPage />} />
             <Route path="/diagnostics" element={<DiagnosticsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route

@@ -19,7 +19,7 @@ Built in verifiable phases. **Phases 1 and 2 are complete.**
 | 1 | Electron + React + TypeScript skeleton, routing, settings, secure API key | Done |
 | 2 | Massive API client, rate limiter, contract lookup, minute aggregates, dev UI | Done |
 | 3 | Local cache (DuckDB) so backtests never re-call Massive | Done |
-| 4 | SPX underlying history (`I:SPX`) plus CSV import fallback | Next |
+| 4 | SPX underlying history via CSV import (`I:SPX` not entitled) | Mechanism done, data not yet loaded |
 | 5 | Single butterfly reconstruction, minute by minute | Planned |
 | 6 | Single-trade management rules | Planned |
 | 7 | Automated entry generation (9 EMA, 7 DTE, placement) | Planned |
@@ -165,6 +165,33 @@ Because of this, a contract that never traded costs exactly one request, ever.
 - Writes are delete-then-insert per day inside a transaction, so re-downloading
   a day is idempotent.
 - Weekends and holidays are never fetched and never recorded as gaps.
+
+## SPX underlying data
+
+**Massive's Options plans do not include index data.** A request for `I:SPX`
+returns:
+
+```
+HTTP 403 - You are not entitled to this data. Please upgrade your plan.
+```
+
+CSV import is therefore the primary acquisition path for SPX, not a fallback.
+The Massive index path remains implemented and isolated, so upgrading the plan
+would enable it with no code changes.
+
+The importer auto-detects delimiter and column mapping, accepts ISO, US-style,
+and epoch timestamps, and tolerates thousands separators and quoted fields. Two
+behaviors matter for correctness:
+
+- **Naive timestamps are interpreted in a zone the user states explicitly**
+  (Eastern by default), because platform exports rarely carry an offset and
+  guessing would silently shift every bar.
+- **Rows that cannot be true are rejected, not repaired.** A bar whose high is
+  below its low or outside its open/close is skipped and reported with its line
+  number, since fabricating a correction would corrupt research silently.
+
+Every import is previewed before anything is written, showing the parsed
+timestamps in Eastern time so the zone interpretation can be confirmed by eye.
 
 ## Massive API integration
 

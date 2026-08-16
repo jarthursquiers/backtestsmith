@@ -43,6 +43,13 @@ const api: AppApi = {
     getOptionBars: (query) => invoke(IPC.massiveGetOptionBars, query),
     getUnderlyingBars: (query) => invoke(IPC.massiveGetUnderlyingBars, query)
   },
+  underlying: {
+    pickFile: () => invoke(IPC.underlyingPickFile),
+    previewCsv: (filePath, options) => invoke(IPC.underlyingPreviewCsv, filePath, options),
+    importCsv: (filePath, options) => invoke(IPC.underlyingImportCsv, filePath, options),
+    cachedBars: (ticker, from, to) => invoke(IPC.underlyingCachedBars, ticker, from, to),
+    coverage: (ticker, from, to) => invoke(IPC.underlyingCoverage, ticker, from, to)
+  },
   cache: {
     stats: () => invoke(IPC.cacheStats),
     clear: () => invoke(IPC.cacheClear)

@@ -1,4 +1,14 @@
-import { app, ipcMain, type BrowserWindow } from 'electron'
+import { readFileSync, statSync } from 'node:fs'
+import { basename } from 'node:path'
+import { app, dialog, ipcMain, type BrowserWindow } from 'electron'
+import { parseUnderlyingCsv } from '../../data/csv/csvImport.js'
+import { tradingDaysBetween } from '../../core/time/marketTime.js'
+import type {
+  CsvImportOptions,
+  CsvImportResult,
+  CsvPreview,
+  UnderlyingCoverageDay
+} from '../../shared/underlying.js'
 import type { BarQuery } from '../../domain/bars.js'
 import type { ContractQuery } from '../../domain/contracts.js'
 import { IPC, type AppInfo, type IpcResult } from '../../shared/ipc.js'
@@ -61,6 +71,87 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   handle(IPC.massiveGetContracts, (query: ContractQuery) => services.provider.getContracts(query))
   handle(IPC.massiveGetOptionBars, (query: BarQuery) => services.provider.getOptionBars(query))
   handle(IPC.massiveGetUnderlyingBars, (query: BarQuery) => services.provider.getUnderlyingBars(query))
+
+  // --- underlying (SPX) -----------------------------------------------------
+  handle(IPC.underlyingPickFile, async (): Promise<string | null> => {
+    const window = getWindow()
+    const options = {
+      title: 'Select an underlying price history CSV',
+      filters: [{ name: 'CSV', extensions: ['csv', 'txt'] }],
+      properties: ['openFile' as const]
+    }
+    const result = window
+      ? await dialog.showOpenDialog(window, options)
+      : await dialog.showOpenDialog(options)
+    return result.canceled ? null : (result.filePaths[0] ?? null)
+  })
+
+  handle(IPC.underlyingPreviewCsv, (filePath: string, options: CsvImportOptions): CsvPreview => {
+    const text = readFileSync(filePath, 'utf8')
+    const parsed = parseUnderlyingCsv(text, options)
+    return {
+      filePath,
+      fileName: basename(filePath),
+      fileBytes: statSync(filePath).size,
+      rowsRead: parsed.rowsRead,
+      rowsAccepted: parsed.rowsAccepted,
+      distinctDates: parsed.marketDates.length,
+      mapping: parsed.mapping,
+      hasHeader: parsed.hasHeader,
+      delimiter: parsed.delimiter,
+      warnings: parsed.warnings,
+      skipped: parsed.skipped.slice(0, 25),
+      dateRange: parsed.dateRange,
+      // Enough rows to confirm the timezone reading before committing anything.
+      sample: parsed.bars.slice(0, 8)
+    }
+  })
+
+  handle(IPC.underlyingImportCsv, async (filePath: string, options: CsvImportOptions): Promise<CsvImportResult> => {
+    const text = readFileSync(filePath, 'utf8')
+    const parsed = parseUnderlyingCsv(text, options)
+
+    if (parsed.bars.length === 0) {
+      throw new Error('No valid rows were found in this file, so nothing was imported.')
+    }
+
+    await services.store.putBars(
+      'underlying',
+      options.ticker,
+      parsed.marketDates,
+      parsed.bars,
+      { timespan: options.timespan, multiplier: 1 },
+      'csv-import'
+    )
+
+    log.info('underlying CSV imported', {
+      ticker: options.ticker,
+      timespan: options.timespan,
+      bars: parsed.bars.length,
+      dates: parsed.marketDates.length,
+      from: parsed.dateRange?.from,
+      to: parsed.dateRange?.to,
+      skipped: parsed.skipped.length
+    })
+
+    return {
+      imported: parsed.bars.length,
+      distinctDates: parsed.marketDates.length,
+      dateRange: parsed.dateRange,
+      warnings: parsed.warnings,
+      skippedCount: parsed.skipped.length
+    }
+  })
+
+  handle(IPC.underlyingCachedBars, (ticker: string, from: string, to: string) => {
+    // Cache-only by design: index data is not entitled on the Options plans, so
+    // reaching upstream here would burn a request to earn an HTTP 403.
+    return services.store.getUnderlyingBars(ticker, tradingDaysBetween(from, to))
+  })
+
+  handle(IPC.underlyingCoverage, (ticker: string, from: string, to: string): Promise<UnderlyingCoverageDay[]> => {
+    return services.store.getUnderlyingCoverage(ticker, from, to)
+  })
 
   // --- cache ----------------------------------------------------------------
   handle(IPC.cacheStats, () => services.cacheStats())

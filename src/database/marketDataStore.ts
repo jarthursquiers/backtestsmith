@@ -278,6 +278,22 @@ export class MarketDataStore {
     return result
   }
 
+  /** Per-session coverage for an underlying, used by the SPX data screen. */
+  async getUnderlyingCoverage(
+    ticker: string,
+    from: MarketDate,
+    to: MarketDate
+  ): Promise<{ marketDate: string; barCount: number; source: string; fetchedAt: number }[]> {
+    return this.db.query(
+      `SELECT market_date AS "marketDate", bar_count AS "barCount",
+              provider AS source, fetched_at AS "fetchedAt"
+         FROM bar_coverage
+        WHERE ticker = ? AND kind = 'underlying' AND market_date BETWEEN ? AND ?
+        ORDER BY market_date ASC`,
+      [ticker, from, to]
+    )
+  }
+
   // --- stats and maintenance ------------------------------------------------
 
   async stats(databaseBytes: number): Promise<CacheStats> {

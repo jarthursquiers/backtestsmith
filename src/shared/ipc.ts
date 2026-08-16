@@ -2,6 +2,12 @@ import type { BarQuery, OptionBar, UnderlyingBar } from '../domain/bars.js'
 import type { ContractQuery, OptionContract } from '../domain/contracts.js'
 import type { BarFetchResult, ProviderStatus } from './provider.js'
 import type { CacheStats } from './cache.js'
+import type {
+  CsvImportOptions,
+  CsvImportResult,
+  CsvPreview,
+  UnderlyingCoverageDay
+} from './underlying.js'
 import type { QueueStats } from './queue.js'
 import type { LogLevel, LogRecord } from './logging.js'
 import type { SecretStatus } from './secrets.js'
@@ -28,6 +34,12 @@ export const IPC = {
   massiveGetContracts: 'massive:getContracts',
   massiveGetOptionBars: 'massive:getOptionBars',
   massiveGetUnderlyingBars: 'massive:getUnderlyingBars',
+
+  underlyingPickFile: 'underlying:pickFile',
+  underlyingPreviewCsv: 'underlying:previewCsv',
+  underlyingImportCsv: 'underlying:importCsv',
+  underlyingCachedBars: 'underlying:cachedBars',
+  underlyingCoverage: 'underlying:coverage',
 
   cacheStats: 'cache:stats',
   cacheClear: 'cache:clear',
@@ -81,6 +93,16 @@ export interface AppApi {
     getContracts(query: ContractQuery): Promise<OptionContract[]>
     getOptionBars(query: BarQuery): Promise<BarFetchResult<OptionBar>>
     getUnderlyingBars(query: BarQuery): Promise<BarFetchResult<UnderlyingBar>>
+  }
+  underlying: {
+    /** Opens a native file picker. Returns null if cancelled. */
+    pickFile(): Promise<string | null>
+    /** Parses without storing, so the interpretation can be confirmed first. */
+    previewCsv(filePath: string, options: CsvImportOptions): Promise<CsvPreview>
+    importCsv(filePath: string, options: CsvImportOptions): Promise<CsvImportResult>
+    /** Reads only from the local cache; never calls a provider. */
+    cachedBars(ticker: string, from: string, to: string): Promise<UnderlyingBar[]>
+    coverage(ticker: string, from: string, to: string): Promise<UnderlyingCoverageDay[]>
   }
   cache: {
     stats(): Promise<CacheStats>

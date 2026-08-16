@@ -310,11 +310,17 @@ export function DataPage() {
             </div>
           </Card>
 
-          <Card title="SPX underlying import" subtitle="Planned for Phase 4">
-            <p className="text-[11px] leading-relaxed text-ink-faint">
-              SPX index history will come from Massive&apos;s indices endpoint (ticker <code className="num">I:SPX</code>),
-              with CSV import as a fallback if index access needs a separate subscription.
-            </p>
+          <Card title="SPX underlying" subtitle="Managed on the SPX Underlying screen">
+            <div className="space-y-2">
+              <Notice tone="warn">
+                Massive&apos;s Options plans do not include index data — <code className="num">I:SPX</code> returns
+                HTTP 403 &ldquo;not entitled&rdquo;. SPX history is imported from CSV instead.
+              </Notice>
+              <p className="text-[11px] leading-relaxed text-ink-faint">
+                The provider path is implemented and isolated, so if the plan is upgraded to include indices it
+                will be used automatically with no code changes.
+              </p>
+            </div>
           </Card>
         </div>
       </div>
