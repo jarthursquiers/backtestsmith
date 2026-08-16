@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import type { SecretStatus } from '../../shared/secrets.js'
 import type { Settings } from '../../shared/settings.js'
 import {
@@ -291,7 +292,7 @@ export function DataPage() {
                 />
                 <StatTile
                   label="Date range"
-                  value={cache?.earliestDate ? `${cache.earliestDate}` : '—'}
+                  value={cache?.earliestDate ? `${cache.earliestDate}` : 'â€”'}
                   hint={cache?.latestDate ? `through ${cache.latestDate}` : undefined}
                 />
               </div>
@@ -310,15 +311,27 @@ export function DataPage() {
             </div>
           </Card>
 
-          <Card title="SPX underlying" subtitle="Managed on the SPX Underlying screen">
+          <Card
+            title="SPX underlying"
+            subtitle="Index history for entry price, direction, and distance-to-center"
+            actions={
+              <Link
+                to="/underlying"
+                className="inline-flex items-center rounded-md border border-accent/50 bg-accent/15 px-2.5 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/25"
+              >
+                Open SPX Underlying
+              </Link>
+            }
+          >
             <div className="space-y-2">
-              <Notice tone="warn">
-                Massive&apos;s Options plans do not include index data — <code className="num">I:SPX</code> returns
-                HTTP 403 &ldquo;not entitled&rdquo;. SPX history is imported from CSV instead.
+              <Notice tone="info">
+                Massive&apos;s Options plans do not include index data &mdash;{' '}
+                <code className="num">I:SPX</code> returns HTTP 403 &ldquo;not entitled&rdquo;. SPX comes from
+                Schwab instead, with CSV import as an alternative.
               </Notice>
               <p className="text-[11px] leading-relaxed text-ink-faint">
-                The provider path is implemented and isolated, so if the plan is upgraded to include indices it
-                will be used automatically with no code changes.
+                Connect Schwab and download SPX history on the SPX Underlying screen. The Massive index path is
+                implemented and isolated, so upgrading that plan would enable it with no code changes.
               </p>
             </div>
           </Card>

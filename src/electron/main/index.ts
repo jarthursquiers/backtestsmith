@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { BrowserWindow, app, shell } from 'electron'
+import { BrowserWindow, app, dialog, shell } from 'electron'
 import { createLogger } from '../../services/logger.js'
 import { registerIpcHandlers } from './ipc.js'
 import { disposeServices, initServices } from './services.js'
@@ -47,25 +47,54 @@ function createWindow(): BrowserWindow {
   return window
 }
 
-app.whenReady().then(async () => {
-  app.setAppUserModelId('com.backtestsmith.app')
+/*
+ * DuckDB takes an exclusive lock on the database file, so a second copy of the
+ * application cannot open the same cache. Rather than let the second instance
+ * die on a lock error, take the standard Electron single-instance lock and
+ * surface the existing window instead.
+ */
+const gotInstanceLock = app.requestSingleInstanceLock()
 
-  // Opening the database is async, so the window is created only once the
-  // cache is ready and the renderer cannot query a half-initialized store.
-  await initServices()
-  registerIpcHandlers(() => mainWindow)
-
-  mainWindow = createWindow()
-  log.info('application ready', { version: app.getVersion(), platform: process.platform })
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createWindow()
+if (!gotInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
     }
   })
-}).catch((error: unknown) => {
-  log.error('failed to start', { error: error instanceof Error ? error.message : String(error) })
-})
+
+  app.whenReady().then(async () => {
+    app.setAppUserModelId('com.backtestsmith.app')
+
+    // Opening the database is async, so the window is created only once the
+    // cache is ready and the renderer cannot query a half-initialized store.
+    await initServices()
+    registerIpcHandlers(() => mainWindow)
+
+    mainWindow = createWindow()
+    log.info('application ready', { version: app.getVersion(), platform: process.platform })
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        mainWindow = createWindow()
+      }
+    })
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    log.error('failed to start', { error: message })
+    // Startup failures are usually the data directory being unreadable or
+    // already locked; a silent exit leaves the user with no idea why.
+    dialog.showErrorBox(
+      'Backtestsmith could not start',
+      `${message}
+
+If another copy of the application is running, close it and try again.`
+    )
+    app.quit()
+  })
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
