@@ -80,6 +80,17 @@ export interface ManagementSummary {
   metrics: StudyMetrics
 }
 
+/** A stored run, without its trades. */
+export interface StudyRunSummary {
+  runId: string
+  createdAt: number
+  label: string | null
+  config: StudyConfig
+  entryCount: number
+  entriesAttempted: number
+  tradeCount: number
+}
+
 export interface StudyRunResult {
   runId: string
   createdAt: number

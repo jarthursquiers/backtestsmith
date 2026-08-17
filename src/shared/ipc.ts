@@ -5,6 +5,7 @@ import type { CacheStats } from './cache.js'
 import type { SchwabBackfillRequest, SchwabBackfillResult, SchwabConnectionStatus } from './schwab.js'
 import type { ChainSummary, ReconstructRequest, ReconstructResponse } from './butterfly.js'
 import type { ParityValidationRequest, ParityValidationResponse } from './parity.js'
+import type { StudyConfig, StudyProgress, StudyRunResult, StudyRunSummary } from './study.js'
 import type {
   CsvImportOptions,
   CsvImportResult,
@@ -37,6 +38,13 @@ export const IPC = {
   massiveGetContracts: 'massive:getContracts',
   massiveGetOptionBars: 'massive:getOptionBars',
   massiveGetUnderlyingBars: 'massive:getUnderlyingBars',
+
+  studyRun: 'study:run',
+  studyCancel: 'study:cancel',
+  studyList: 'study:list',
+  studyLoad: 'study:load',
+  studyDelete: 'study:delete',
+  studyProgressEvent: 'study:progress:event',
 
   parityValidate: 'parity:validate',
 
@@ -110,6 +118,17 @@ export interface AppApi {
     getContracts(query: ContractQuery): Promise<OptionContract[]>
     getOptionBars(query: BarQuery): Promise<BarFetchResult<OptionBar>>
     getUnderlyingBars(query: BarQuery): Promise<BarFetchResult<UnderlyingBar>>
+  }
+  study: {
+    /** Runs a study to completion, persisting the result. */
+    run(config: StudyConfig, label?: string): Promise<StudyRunResult>
+    /** Requests cancellation of the run in progress. */
+    cancel(): Promise<void>
+    list(limit?: number): Promise<StudyRunSummary[]>
+    load(runId: string): Promise<StudyRunResult | null>
+    remove(runId: string): Promise<void>
+    /** Subscribes to progress while a study runs. Returns an unsubscribe. */
+    onProgress(listener: (progress: StudyProgress) => void): () => void
   }
   parity: {
     /** Measures derived-index accuracy against real index data. */

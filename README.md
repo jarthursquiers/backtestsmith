@@ -22,8 +22,8 @@ Built in verifiable phases. **Phases 1 and 2 are complete.**
 | 4 | SPX underlying history via CSV import (`I:SPX` not entitled) | Mechanism done, data not yet loaded |
 | 5 | Single butterfly reconstruction, minute by minute | Done |
 | 6 | Single-trade management rules | Done |
-| 7 | Automated entry generation (9 EMA, 7 DTE, placement) | Engine done; batch runner is Phase 8 |
-| 8 | Batch backtester and summary statistics | Engine done; UI pending |
+| 7 | Automated entry generation (9 EMA, 7 DTE, placement) | Done |
+| 8 | Batch backtester and summary statistics | Done |
 | 9 | Management comparison and equity curves | Planned |
 | 10 | MFE / MAE / conditional path analytics | Planned |
 | 11 | Generic parameter sweep | Planned |
@@ -276,6 +276,18 @@ derived from it.
 Expected-move placement requires the move to be supplied from measured data. It
 is deliberately not estimated internally, because deriving it needs an
 at-the-money straddle price at the entry minute.
+
+## Reproducibility
+
+Every run stores its configuration verbatim: date range, entry time, signal,
+expiration rule, placement, wing width, pricing model, slippage, missing-data
+policy, coverage threshold, and the application version and git commit. A result
+that cannot be traced to the assumptions that produced it is not reproducible,
+and these numbers are intended to be discussed publicly.
+
+Summaries are **recomputed on load** rather than stored, so a later change to a
+metric definition applies to historic runs instead of freezing an old
+interpretation alongside the trades.
 
 ## Study metrics
 

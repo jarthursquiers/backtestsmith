@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC, type AppApi, type IpcResult } from '../../shared/ipc.js'
 import type { LogLevel, LogRecord } from '../../services/logger.js'
 import type { QueueStats } from '../../data/requestQueue.js'
+import type { StudyProgress } from '../../shared/study.js'
 
 /**
  * The only bridge between the renderer and the main process.
@@ -42,6 +43,14 @@ const api: AppApi = {
     getContracts: (query) => invoke(IPC.massiveGetContracts, query),
     getOptionBars: (query) => invoke(IPC.massiveGetOptionBars, query),
     getUnderlyingBars: (query) => invoke(IPC.massiveGetUnderlyingBars, query)
+  },
+  study: {
+    run: (config, label) => invoke(IPC.studyRun, config, label),
+    cancel: () => invoke(IPC.studyCancel),
+    list: (limit) => invoke(IPC.studyList, limit),
+    load: (runId) => invoke(IPC.studyLoad, runId),
+    remove: (runId) => invoke(IPC.studyDelete, runId),
+    onProgress: (listener) => subscribe<StudyProgress>(IPC.studyProgressEvent, listener)
   },
   parity: {
     validate: (request) => invoke(IPC.parityValidate, request)

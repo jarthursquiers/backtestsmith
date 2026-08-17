@@ -7,6 +7,8 @@ import { DataPage } from './pages/DataPage.js'
 import { ExplorerPage } from './pages/ExplorerPage.js'
 import { UnderlyingPage } from './pages/UnderlyingPage.js'
 import { TradeInspectorPage } from './pages/TradeInspectorPage.js'
+import { RunStudyPage } from './pages/RunStudyPage.js'
+import { ResultsPage } from './pages/ResultsPage.js'
 import { DiagnosticsPage } from './pages/DiagnosticsPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
 import { PlannedPage } from './pages/PlannedPage.js'
@@ -32,8 +34,8 @@ const NAV_GROUPS: { heading: string; items: NavItem[] }[] = [
       { to: '/explorer', label: 'Contract Explorer' },
       { to: '/underlying', label: 'SPX Underlying' },
       { to: '/strategy', label: 'Strategy', phase: 'Phase 7' },
-      { to: '/run', label: 'Run Study', phase: 'Phase 8' },
-      { to: '/results', label: 'Results', phase: 'Phase 8' },
+      { to: '/run', label: 'Run Study' },
+      { to: '/results', label: 'Results' },
       { to: '/compare', label: 'Compare', phase: 'Phase 9' },
       { to: '/trade', label: 'Trade Inspector' }
     ]
@@ -124,26 +126,8 @@ export function App() {
                 />
               }
             />
-            <Route
-              path="/run"
-              element={
-                <PlannedPage
-                  title="Run Study"
-                  phase="Phase 8"
-                  description="Configure one management rule or a parameter sweep, then run the batch backtester over a date range."
-                />
-              }
-            />
-            <Route
-              path="/results"
-              element={
-                <PlannedPage
-                  title="Results"
-                  phase="Phase 8"
-                  description="Summary metrics, equity curve, drawdown, and the aggregate research charts."
-                />
-              }
-            />
+            <Route path="/run" element={<RunStudyPage />} />
+            <Route path="/results" element={<ResultsPage />} />
             <Route
               path="/compare"
               element={

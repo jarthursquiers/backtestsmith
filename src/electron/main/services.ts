@@ -10,6 +10,7 @@ import { SchwabStore } from '../../services/schwabStore.js'
 import type { OptionsHistoricalDataProvider } from '../../data/provider.js'
 import { Database } from '../../database/duckdb.js'
 import { MarketDataStore } from '../../database/marketDataStore.js'
+import { StudyStore } from '../../database/studyStore.js'
 import type { CacheStats } from '../../shared/cache.js'
 import { createLogger, logStore } from '../../services/logger.js'
 import { SecretStore } from '../../services/secrets.js'
@@ -37,6 +38,7 @@ export interface AppServices {
   schwabQueue: RequestQueue
   database: Database
   store: MarketDataStore
+  studies: StudyStore
   dataDirectory: string
   cacheStats(): Promise<CacheStats>
   applySettings(): void
@@ -75,6 +77,7 @@ export async function initServices(): Promise<AppServices> {
   const database = new Database(join(dataDirectory, 'market-data.duckdb'))
   await database.open()
   const store = new MarketDataStore(database)
+  const studies = new StudyStore(database)
 
   const provider = new CachedProvider(upstream, store)
 
@@ -102,6 +105,7 @@ export async function initServices(): Promise<AppServices> {
     schwabQueue,
     database,
     store,
+    studies,
     dataDirectory,
     async cacheStats(): Promise<CacheStats> {
       let bytes = 0

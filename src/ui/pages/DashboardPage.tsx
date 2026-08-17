@@ -107,8 +107,8 @@ export function DashboardPage() {
               { phase: 'Phase 4', label: 'SPX underlying history via CSV import (I:SPX not entitled on Options plans)', done: true },
               { phase: 'Phase 5', label: 'Single butterfly reconstruction, minute by minute', done: true },
               { phase: 'Phase 6', label: 'Single-trade management rules', done: true },
-              { phase: 'Phase 7', label: 'Automated entry generation (9 EMA, 7 DTE, placement)', done: false },
-              { phase: 'Phase 8', label: 'Batch backtester and summary statistics', done: false },
+              { phase: 'Phase 7', label: 'Automated entry generation (9 EMA, 7 DTE, placement)', done: true },
+              { phase: 'Phase 8', label: 'Batch backtester and summary statistics', done: true },
               { phase: 'Phase 9', label: 'Management comparison and equity curves', done: false },
               { phase: 'Phase 10', label: 'MFE / MAE / conditional path analytics', done: false },
               { phase: 'Phase 11', label: 'Generic parameter sweep', done: false }

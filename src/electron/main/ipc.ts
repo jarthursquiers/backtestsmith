@@ -23,6 +23,13 @@ import {
 } from '../../backtest/parityValidation.js'
 import type { ParityValidationRequest, ParityValidationResponse } from '../../shared/parity.js'
 import { sessionMinuteGrid } from '../../backtest/reconstruct.js'
+import { runStudy, type StudyDataSource } from '../../backtest/studyRunner.js'
+import { computeMetrics } from '../../backtest/metrics.js'
+import type {
+  ManagementSummary,
+  StudyConfig,
+  StudyRunResult
+} from '../../shared/study.js'
 import {
   centerTouch,
   holdToExpiration,
@@ -51,6 +58,9 @@ import type { QueueStats } from '../../data/requestQueue.js'
 import { getServices } from './services.js'
 
 const log = createLogger('ipc')
+
+/** Only one study may run at a time; a second would contend for the same queue. */
+let activeStudy: AbortController | null = null
 
 /**
  * Wraps a handler so failures cross the boundary as structured results rather
@@ -105,6 +115,113 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   handle(IPC.massiveGetContracts, (query: ContractQuery) => services.provider.getContracts(query))
   handle(IPC.massiveGetOptionBars, (query: BarQuery) => services.provider.getOptionBars(query))
   handle(IPC.massiveGetUnderlyingBars, (query: BarQuery) => services.provider.getUnderlyingBars(query))
+
+  // --- studies --------------------------------------------------------------
+  handle(IPC.studyRun, async (config: StudyConfig, label?: string): Promise<StudyRunResult> => {
+    if (activeStudy) throw new Error('A study is already running. Cancel it before starting another.')
+
+    const controller = new AbortController()
+    activeStudy = controller
+    const minuteShape = { timespan: 'minute', multiplier: 1 }
+    const dailyShape = { timespan: 'day', multiplier: 1 }
+
+    /*
+     * The runner asks for data; the caching provider decides whether that costs
+     * a request. Underlying reads are cache-only because index data is not
+     * entitled upstream, so reaching out would spend a call to earn a 403.
+     */
+    const source: StudyDataSource = {
+      getDailyBars: (ticker, from, to) =>
+        services.store.getUnderlyingBars(ticker, tradingDaysBetween(from, to), dailyShape),
+      getUnderlyingMinutes: (ticker, date) =>
+        services.store.getUnderlyingBars(ticker, [date], minuteShape),
+      getChain: (underlying, expiration, type) =>
+        services.provider.getContracts({ underlying, expirationDate: expiration, type, expired: true }),
+      getOptionBars: async (ticker, from, to) =>
+        (await services.provider.getOptionBars({ ticker, from, to, timespan: 'minute' })).bars
+    }
+
+    let lastSent = 0
+    try {
+      const outcome = await runStudy(config, source, {
+        signal: controller.signal,
+        onProgress: (progress) => {
+          // Throttled: a study touches hundreds of sessions and the renderer
+          // gains nothing from more than a few updates a second.
+          const now = Date.now()
+          if (now - lastSent < 200) return
+          lastSent = now
+          const window = getWindow()
+          if (window && !window.isDestroyed()) {
+            window.webContents.send(IPC.studyProgressEvent, progress)
+          }
+        }
+      })
+
+      const summaries: ManagementSummary[] = config.managements.map((id) => {
+        const trades = outcome.trades.filter((t) => t.strategyId === id)
+        return {
+          strategyId: id,
+          strategyLabel: trades[0]?.strategyLabel ?? id,
+          metrics: computeMetrics(trades)
+        }
+      })
+
+      const result: StudyRunResult = {
+        runId: randomBytes(8).toString('hex'),
+        createdAt: Date.now(),
+        config,
+        entryCount: outcome.series.length,
+        entriesAttempted: outcome.entriesAttempted,
+        skipped: outcome.skipped,
+        summaries,
+        trades: outcome.trades,
+        sizing: 'oneContract',
+        appVersion: app.getVersion(),
+        ...(process.env.GIT_COMMIT ? { gitCommit: process.env.GIT_COMMIT } : {})
+      }
+
+      await services.studies.save(result, label)
+
+      const window = getWindow()
+      if (window && !window.isDestroyed()) {
+        window.webContents.send(IPC.studyProgressEvent, {
+          phase: 'done',
+          completed: outcome.entriesAttempted,
+          total: outcome.entriesAttempted,
+          tradesGenerated: outcome.series.length,
+          skipped: outcome.skipped.length
+        })
+      }
+
+      return result
+    } finally {
+      activeStudy = null
+    }
+  })
+
+  handle(IPC.studyCancel, () => {
+    activeStudy?.abort()
+  })
+
+  handle(IPC.studyList, (limit?: number) => services.studies.list(limit))
+  handle(IPC.studyLoad, async (runId: string) => {
+    const run = await services.studies.load(runId)
+    if (!run) return null
+    // Summaries are recomputed on load so a change to the metric definitions
+    // applies to historic runs rather than freezing an old interpretation.
+    const ids = [...new Set(run.trades.map((t) => t.strategyId))]
+    run.summaries = ids.map((id) => {
+      const trades = run.trades.filter((t) => t.strategyId === id)
+      return {
+        strategyId: id,
+        strategyLabel: trades[0]?.strategyLabel ?? id,
+        metrics: computeMetrics(trades)
+      }
+    })
+    return run
+  })
+  handle(IPC.studyDelete, (runId: string) => services.studies.remove(runId))
 
   // --- put-call parity validation -------------------------------------------
   handle(IPC.parityValidate, async (request: ParityValidationRequest): Promise<ParityValidationResponse> => {

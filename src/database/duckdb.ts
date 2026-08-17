@@ -21,7 +21,7 @@ const log = createLogger('database')
  */
 
 /** Bumped whenever the schema changes; migrations run in order on open. */
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 3
 
 const MIGRATIONS: { version: number; statements: string[] }[] = [
   {
@@ -169,6 +169,61 @@ const MIGRATIONS: { version: number; statements: string[] }[] = [
 
       `CREATE INDEX IF NOT EXISTS idx_option_bars_lookup ON option_bars (ticker, timespan, multiplier, market_date)`,
       `CREATE INDEX IF NOT EXISTS idx_underlying_bars_lookup ON underlying_bars (ticker, timespan, multiplier, market_date)`
+    ]
+  },
+  {
+    /*
+     * Study results.
+     *
+     * Each run stores its configuration verbatim, so a result can always be
+     * traced to the exact assumptions that produced it - including pricing
+     * model, missing-data policy, and the application version and commit. That
+     * snapshot is the difference between a reproducible study and a number
+     * someone once saw.
+     *
+     * Trades keep the fields worth querying as columns and the whole result as
+     * JSON alongside, so summaries stay fast without discarding any detail.
+     */
+    version: 3,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS study_runs (
+        run_id VARCHAR PRIMARY KEY,
+        created_at BIGINT NOT NULL,
+        label VARCHAR,
+        config_json VARCHAR NOT NULL,
+        entry_count INTEGER NOT NULL,
+        entries_attempted INTEGER NOT NULL,
+        skipped_json VARCHAR NOT NULL,
+        app_version VARCHAR NOT NULL,
+        git_commit VARCHAR
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS study_trades (
+        run_id VARCHAR NOT NULL,
+        strategy_id VARCHAR NOT NULL,
+        entry_timestamp BIGINT NOT NULL,
+        exit_timestamp BIGINT NOT NULL,
+        expiration VARCHAR NOT NULL,
+        center_strike DOUBLE NOT NULL,
+        wing_width DOUBLE NOT NULL,
+        direction VARCHAR NOT NULL,
+        entry_debit DOUBLE NOT NULL,
+        exit_value DOUBLE NOT NULL,
+        exit_reason VARCHAR NOT NULL,
+        ambiguous BOOLEAN NOT NULL,
+        pnl_dollars DOUBLE NOT NULL,
+        pnl_pct DOUBLE NOT NULL,
+        holding_minutes INTEGER NOT NULL,
+        exit_dte INTEGER NOT NULL,
+        mfe_pct DOUBLE,
+        mae_pct DOUBLE,
+        mfe_capture DOUBLE,
+        profit_giveback DOUBLE NOT NULL,
+        coverage DOUBLE NOT NULL,
+        payload_json VARCHAR NOT NULL
+      )`,
+
+      `CREATE INDEX IF NOT EXISTS idx_study_trades_run ON study_trades (run_id, strategy_id)`
     ]
   }
 ]
