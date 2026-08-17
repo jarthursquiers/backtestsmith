@@ -246,54 +246,33 @@ never pretends otherwise:
 
 ## SPX underlying data
 
-**Massive's Options plans do not include index data.** A request for `I:SPX`
-returns:
+**Index data is a separate Massive subscription from options.** Without it,
+`I:SPX` returns:
 
 ```
 HTTP 403 - You are not entitled to this data. Please upgrade your plan.
 ```
 
-SPX therefore comes from **Schwab**, with CSV import as an alternative. The
-Massive index path remains implemented and isolated, so upgrading that plan
-would enable it with no code changes.
+This is an entitlement boundary, not a history limit. Massive sells each asset
+class independently, and the free **Indices Basic** tier includes minute
+aggregates over roughly one year, though it covers a limited set of tickers.
 
-### Schwab
+Three sources are supported, all writing into the same local cache:
 
-Endpoints verified against the working Optionsmith implementation in
-`../kingarthurtrader` rather than guessed:
+| Source | History | Notes |
+| --- | --- | --- |
+| Massive Indices | ~1 year (Basic) | Same API key; needs an Indices subscription |
+| Schwab | daily: years; **minute: ~1 month** | Minute history is too shallow for this study |
+| CSV import | whatever the file holds | Always available |
 
-| Item | Value |
-| --- | --- |
-| Price history | `GET api.schwabapi.com/marketdata/v1/pricehistory` |
-| SPX symbol | `$SPX` (SPX / SPXW / SPXQ / SPXPM all map to it) |
-| Authorize | `api.schwabapi.com/v1/oauth/authorize` |
-| Token | `api.schwabapi.com/v1/oauth/token`, HTTP Basic `base64(id:secret)` |
-| Access token | ~30 minutes, refreshed automatically |
-| Refresh token | **hard 7-day expiry, not rotated** |
-| Minute constraint | `periodType=day` is the only type valid with `frequencyType=minute` |
+Schwab daily was verified complete: 499 sessions returned for 2024-08-19 to
+2026-08-14, exactly matching what the trading calendar predicts. Schwab minute
+history proved to be about a month, so it cannot drive a year-long study on its
+own.
 
-Three consequences shape the implementation:
-
-- **Minute requests are chunked into 10-day windows**, since `periodType=day`
-  caps the span. A long backfill becomes many requests rather than one silently
-  truncated one.
-- **Re-authorization is required weekly.** Refreshing mints a new access token
-  but does not extend the 7-day refresh window, so the UI counts down honestly
-  rather than implying the connection is indefinite. This matters less than it
-  sounds: SPX history is downloaded once into the local cache and reused.
-- **Authorization is manual by design.** Schwab redirects to a registered
-  `https://127.0.0.1` callback that nothing is listening on; the user copies the
-  resulting address bar contents back into the app. Running a local HTTPS server
-  would mean a self-signed certificate and training the user to click through
-  browser security warnings.
-
-Schwab uses its own request queue, because its rate limits are unrelated to
-Massive's and a backlog on one must not stall the other.
-
-A Schwab backfill records coverage **only for sessions that actually returned
-bars**. An empty response there is not evidence the index did not trade - it
-usually means the range is outside Schwab's retention - so it is never recorded
-as a confirmed-empty day, which would permanently suppress a retry.
+Effective study window is the intersection of what each source covers: options
+run two years on Options Basic, so the index source is normally the binding
+constraint.
 
 The importer auto-detects delimiter and column mapping, accepts ISO, US-style,
 and epoch timestamps, and tolerates thousands separators and quoted fields. Two

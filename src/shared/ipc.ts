@@ -48,6 +48,7 @@ export const IPC = {
   schwabTest: 'schwab:test',
   schwabBackfill: 'schwab:backfill',
 
+  underlyingDownloadMassive: 'underlying:downloadMassive',
   underlyingPickFile: 'underlying:pickFile',
   underlyingPreviewCsv: 'underlying:previewCsv',
   underlyingImportCsv: 'underlying:importCsv',
@@ -126,6 +127,11 @@ export interface AppApi {
     backfill(request: SchwabBackfillRequest): Promise<SchwabBackfillResult>
   }
   underlying: {
+    /**
+     * Downloads index history from Massive into the local cache. Requires an
+     * Indices subscription; without one the request returns HTTP 403.
+     */
+    downloadMassive(request: SchwabBackfillRequest): Promise<SchwabBackfillResult>
     /** Opens a native file picker. Returns null if cancelled. */
     pickFile(): Promise<string | null>
     /** Parses without storing, so the interpretation can be confirmed first. */

@@ -298,6 +298,58 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   })
 
   // --- underlying (SPX) -----------------------------------------------------
+  handle(IPC.underlyingDownloadMassive, async (request: SchwabBackfillRequest): Promise<SchwabBackfillResult> => {
+    const before = services.queue.getStats().completed
+    const sessions = tradingDaysBetween(request.from, request.to)
+    if (sessions.length === 0) {
+      throw new Error(`No trading days between ${request.from} and ${request.to}.`)
+    }
+
+    /*
+     * Chunked by month rather than issued as one span. A year of index minutes
+     * is ~97,000 bars, past the documented 50,000-per-response limit, and at
+     * five calls per minute a resumable sequence of small requests is far
+     * better than one oversized one. The cache skips any month already held,
+     * so re-running after an interruption costs nothing for completed months.
+     */
+    const chunks: { from: string; to: string }[] = []
+    for (let i = 0; i < sessions.length; i += 21) {
+      chunks.push({ from: sessions[i]!, to: sessions[Math.min(i + 20, sessions.length - 1)]! })
+    }
+
+    let barsWritten = 0
+    const datesWritten = new Set<string>()
+
+    for (const chunk of chunks) {
+      const result = await services.provider.getUnderlyingBars({
+        ticker: request.ticker,
+        from: chunk.from,
+        to: chunk.to,
+        timespan: request.timespan
+      })
+      barsWritten += result.bars.length
+      for (const bar of result.bars) datesWritten.add(marketDateOf(bar.timestamp))
+    }
+
+    const sorted = [...datesWritten].sort()
+    log.info('underlying downloaded from Massive', {
+      ticker: request.ticker,
+      timespan: request.timespan,
+      chunks: chunks.length,
+      bars: barsWritten,
+      sessions: sorted.length
+    })
+
+    return {
+      ticker: request.ticker,
+      timespan: request.timespan,
+      barsWritten,
+      sessionsWritten: sorted.length,
+      dateRange: sorted.length > 0 ? { from: sorted[0]!, to: sorted[sorted.length - 1]! } : null,
+      requests: services.queue.getStats().completed - before
+    }
+  })
+
   handle(IPC.underlyingPickFile, async (): Promise<string | null> => {
     const window = getWindow()
     const options = {

@@ -58,6 +58,7 @@ const api: AppApi = {
     backfill: (request) => invoke(IPC.schwabBackfill, request)
   },
   underlying: {
+    downloadMassive: (request) => invoke(IPC.underlyingDownloadMassive, request),
     pickFile: () => invoke(IPC.underlyingPickFile),
     previewCsv: (filePath, options) => invoke(IPC.underlyingPreviewCsv, filePath, options),
     importCsv: (filePath, options) => invoke(IPC.underlyingImportCsv, filePath, options),

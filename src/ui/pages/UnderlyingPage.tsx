@@ -17,6 +17,7 @@ import {
 } from '../components/primitives.js'
 import { BarSeriesChart } from '../charts/BarSeriesChart.js'
 import { SchwabConnect } from '../components/SchwabConnect.js'
+import { MassiveIndexDownload } from '../components/MassiveIndexDownload.js'
 import { fmtBytes, fmtEasternDateTime, fmtEasternTime, fmtInt, fmtPrice, shiftDate, todayEastern } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
 
@@ -96,10 +97,13 @@ export function UnderlyingPage() {
 
       <div className="flex-1 space-y-4 overflow-y-auto p-6">
         <Notice tone="info">
-          Massive&apos;s Options plans do not include index data &mdash; <code className="num">I:SPX</code>{' '}
-          returns HTTP 403 &ldquo;not entitled&rdquo;. SPX therefore comes from Schwab below, with CSV import
-          as an alternative.
+          Index data is a <strong>separate Massive subscription</strong> from options. Without it{' '}
+          <code className="num">I:SPX</code> returns HTTP 403 &ldquo;not entitled&rdquo;. Indices Basic is free
+          and includes minute aggregates, so adding it to the same account is usually the shortest path. Schwab
+          and CSV import remain available below.
         </Notice>
+
+        <MassiveIndexDownload onDataChanged={() => void refreshCoverage()} />
 
         <SchwabConnect onDataChanged={() => void refreshCoverage()} />
 
