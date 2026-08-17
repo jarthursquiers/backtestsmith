@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { StudyConfig, StudyProgress } from '../../shared/study.js'
+import type { StudyConfig } from '../../shared/study.js'
 import { tradingDaysBetween } from '../../core/time/marketTime.js'
 import {
   Badge,
@@ -16,6 +16,7 @@ import {
 } from '../components/primitives.js'
 import { fmtInt, shiftDate, todayEastern } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
+import { StudyProgressPanel } from '../components/StudyProgressPanel.js'
 
 /** Ids the engine can resolve; kept in step with managementSets.ts. */
 const MANAGEMENT_OPTIONS: { id: string; label: string; group: string }[] = [
@@ -65,12 +66,6 @@ export function RunStudyPage() {
   const [minimumCoverage, setMinimumCoverage] = useState('0.5')
   const [label, setLabel] = useState('')
   const [selected, setSelected] = useState<string[]>(DEFAULT_SELECTION)
-  const [progress, setProgress] = useState<StudyProgress | null>(null)
-
-  useEffect(() => {
-    const unsubscribe = window.api.study.onProgress(setProgress)
-    return unsubscribe
-  }, [])
 
   const sessions = useMemo(() => {
     try {
@@ -108,10 +103,13 @@ export function RunStudyPage() {
     managements: selected
   })
 
+  const [preflightState, checkPreflight] = useAsyncAction(() => window.api.study.preflight(config()))
+
   const [runState, run] = useAsyncAction(async () => {
-    setProgress(null)
     const result = await window.api.study.run(config(), label.trim() || undefined)
-    navigate(`/results?run=${result.runId}`)
+    // Only navigate away when there is something to look at; otherwise the
+    // progress panel and its skip reasons stay on screen where they are useful.
+    if (result.entryCount > 0) navigate(`/results?run=${result.runId}`)
     return result
   })
 
@@ -132,38 +130,57 @@ export function RunStudyPage() {
               Cancel
             </Button>
           ) : (
-            <Button variant="primary" onClick={() => void run()} disabled={selected.length === 0}>
-              Run study
-            </Button>
+            <div className="flex gap-2">
+              <Button onClick={() => void checkPreflight()} disabled={preflightState.loading}>
+                {preflightState.loading && <Spinner />}
+                Check data
+              </Button>
+              <Button variant="primary" onClick={() => void run()} disabled={selected.length === 0}>
+                Run study
+              </Button>
+            </div>
           )
         }
       />
 
       <div className="flex-1 space-y-4 overflow-y-auto p-6">
-        {running && progress && (
-          <Card title="Running">
-            <div className="space-y-3">
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
-                <div
-                  className="h-full bg-accent transition-all"
-                  style={{ width: `${progress.total > 0 ? (progress.completed / progress.total) * 100 : 0}%` }}
+        <StudyProgressPanel />
+
+        {runState.error && <Notice tone="error">{runState.error}</Notice>}
+
+        {preflightState.data && (
+          <Card
+            title="Data check"
+            subtitle="What is cached for this range, before committing to a run"
+          >
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+                <StatTile label="Sessions" value={fmtInt(preflightState.data.sessions)} />
+                <StatTile
+                  label="Daily bars"
+                  value={fmtInt(preflightState.data.dailyBars)}
+                  tone={preflightState.data.dailyBars > 0 ? 'gain' : 'loss'}
+                  hint="needed for the EMA"
+                />
+                <StatTile
+                  label="Intraday sampled"
+                  value={`${preflightState.data.underlyingMinuteSessions}/10`}
+                  tone={preflightState.data.underlyingMinuteSessions > 0 ? 'gain' : 'warn'}
+                  hint="first ten sessions"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <StatTile label="Session" value={`${progress.completed} / ${progress.total}`} hint={progress.currentDate} />
-                <StatTile label="Entries" value={fmtInt(Math.round(progress.tradesGenerated))} tone="gain" />
-                <StatTile label="Skipped" value={fmtInt(progress.skipped)} tone={progress.skipped > 0 ? 'warn' : 'neutral'} />
-                <StatTile label="Phase" value={progress.phase} />
-              </div>
-              <p className="text-[10px] leading-relaxed text-ink-faint">
-                Most of the elapsed time is the Massive rate limit, not computation. Data already cached costs
-                nothing, so re-running a study over the same range is fast.
-              </p>
+              {preflightState.data.blockers.map((b) => (
+                <Notice key={b} tone="error">{b}</Notice>
+              ))}
+              {preflightState.data.warnings.map((w) => (
+                <Notice key={w} tone="warn">{w}</Notice>
+              ))}
+              {preflightState.data.blockers.length === 0 && (
+                <Notice tone="success">Nothing blocking. This range can produce entries.</Notice>
+              )}
             </div>
           </Card>
         )}
-
-        {runState.error && <Notice tone="error">{runState.error}</Notice>}
 
         <div className="grid gap-4 lg:grid-cols-2">
           <Card title="Entry" subtitle="Signal, timing, and expiration targeting">

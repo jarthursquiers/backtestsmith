@@ -2,7 +2,13 @@ import type { OptionBar, UnderlyingBar } from '../domain/bars.js'
 import type { OptionContract, OptionType } from '../domain/contracts.js'
 import type { ButterflySeries, MissingDataPolicy, PricingAssumptions } from '../domain/butterfly.js'
 import type { TradeResult } from '../shared/trade.js'
-import type { StudyConfig, StudyProgress, SkippedEntry } from '../shared/study.js'
+import {
+  normalizeSkipReason,
+  type StudyConfig,
+  type StudyProgress,
+  type SkippedEntry,
+  type StudyPreflight
+} from '../shared/study.js'
 import {
   easternToTimestamp,
   parseTimeOfDay,
@@ -53,6 +59,65 @@ export interface StudyDataSource {
 export interface StudyHooks {
   onProgress?: (progress: StudyProgress) => void
   signal?: AbortSignal
+  /** Called for every skipped session, so callers can log as it happens. */
+  onSkip?: (entry: SkippedEntry) => void
+}
+
+export { normalizeSkipReason } from '../shared/study.js'
+
+/**
+ * Checks whether a study can produce anything, before spending an hour finding
+ * out that it cannot.
+ */
+export async function preflightStudy(
+  config: StudyConfig,
+  source: StudyDataSource
+): Promise<StudyPreflight> {
+  const sessions = tradingDaysBetween(config.from, config.to)
+  const dailyBars = await source.getDailyBars(config.underlying, shiftDays(config.from, -180), config.to)
+
+  // Sample the first few sessions rather than every one; the question is whether
+  // intraday data exists at all, not exactly how much.
+  let underlyingMinuteSessions = 0
+  for (const date of sessions.slice(0, 10)) {
+    if ((await source.getUnderlyingMinutes(config.underlying, date)).length > 0) {
+      underlyingMinuteSessions++
+    }
+  }
+
+  const blockers: string[] = []
+  const warnings: string[] = []
+  const period = config.entry.type === 'ema' ? config.entry.period : 0
+
+  if (sessions.length === 0) {
+    blockers.push(`No trading days between ${config.from} and ${config.to}.`)
+  }
+
+  if (dailyBars.length === 0) {
+    blockers.push(
+      `No daily ${config.underlying} bars are cached, so every session will be skipped for want of an ` +
+        'indicator. Download daily underlying history on the SPX Underlying screen first.'
+    )
+  } else if (period > 0 && dailyBars.length < period + 1) {
+    blockers.push(
+      `Only ${dailyBars.length} daily bars are cached, but the ${period} EMA needs at least ${period + 1}.`
+    )
+  }
+
+  if (underlyingMinuteSessions === 0) {
+    warnings.push(
+      'No intraday underlying data is cached at the start of this range. The index level at entry will be ' +
+        'derived from put-call parity, and underlying-location rules such as centre touch cannot fire.'
+    )
+  }
+
+  return {
+    sessions: sessions.length,
+    dailyBars: dailyBars.length,
+    underlyingMinuteSessions,
+    blockers,
+    warnings
+  }
 }
 
 export interface StudyOutcome {
@@ -61,6 +126,9 @@ export interface StudyOutcome {
   series: ButterflySeries[]
   skipped: SkippedEntry[]
   entriesAttempted: number
+  /** Grouped skip tally, so the dominant cause is immediately visible. */
+  skipReasons: Record<string, number>
+  elapsedMs: number
 }
 
 function buildEntryStrategy(config: StudyConfig): EntryStrategy {
@@ -120,23 +188,41 @@ export async function runStudy(
   const trades: TradeResult[] = []
   const series: ButterflySeries[] = []
   const skipped: SkippedEntry[] = []
+  const skipReasons: Record<string, number> = {}
+  const startedAt = Date.now()
   let attempted = 0
 
-  for (const [index, entryDate] of sessions.entries()) {
-    if (hooks.signal?.aborted) break
-    attempted++
-
+  const report = (index: number, entryDate: string, stage: string): void => {
+    const elapsedMs = Date.now() - startedAt
     hooks.onProgress?.({
       phase: 'entries',
       completed: index,
       total: sessions.length,
       currentDate: entryDate,
-      tradesGenerated: trades.length / Math.max(1, managements.length),
-      skipped: skipped.length
+      stage,
+      tradesGenerated: series.length,
+      skipped: skipped.length,
+      skipReasons: { ...skipReasons },
+      elapsedMs,
+      // Linear extrapolation from work already done. Crude, but the dominant
+      // cost is a fixed per-request wait, so it is close enough to be useful.
+      ...(index > 0
+        ? { estimatedRemainingMs: (elapsedMs / index) * (sessions.length - index) }
+        : {})
     })
+  }
+
+  for (const [index, entryDate] of sessions.entries()) {
+    if (hooks.signal?.aborted) break
+    attempted++
+
+    report(index, entryDate, 'starting')
 
     const skip = (reason: string): void => {
       skipped.push({ date: entryDate, reason })
+      const key = normalizeSkipReason(reason)
+      skipReasons[key] = (skipReasons[key] ?? 0) + 1
+      hooks.onSkip?.({ date: entryDate, reason })
     }
 
     const entryTimestamp = easternToTimestamp(entryDate, entryTime.hour, entryTime.minute)
@@ -163,6 +249,7 @@ export async function runStudy(
           : 'call'
         : 'put'
 
+    report(index, entryDate, 'checking expirations')
     const listed: MarketDate[] = []
     for (const candidate of candidates) {
       if (hooks.signal?.aborted) break
@@ -299,6 +386,7 @@ export async function runStudy(
       continue
     }
 
+    report(index, entryDate, 'fetching legs')
     const [lower, center, upper] = await Promise.all([
       source.getOptionBars(definition.lowerTicker, entryDate, choice.expiration),
       source.getOptionBars(definition.centerTicker, entryDate, choice.expiration),
@@ -332,14 +420,24 @@ export async function runStudy(
     trades.push(...simulateAll(reconstructed, managements))
   }
 
+  const elapsedMs = Date.now() - startedAt
   log.info('study complete', {
     sessions: sessions.length,
     entries: series.length,
     skipped: skipped.length,
-    trades: trades.length
+    trades: trades.length,
+    elapsedSeconds: Math.round(elapsedMs / 1000)
   })
 
-  return { trades, series, skipped, entriesAttempted: attempted }
+  /*
+   * A grouped tally, because a flat list of 57 skips hides that they share one
+   * cause, while a tally makes that the first thing anyone reads.
+   */
+  for (const [reason, count] of Object.entries(skipReasons).sort((a, b) => b[1] - a[1])) {
+    log.warn(`skipped ${count} session(s): ${reason}`)
+  }
+
+  return { trades, series, skipped, entriesAttempted: attempted, skipReasons, elapsedMs }
 }
 
 async function collectUnderlying(

@@ -23,7 +23,7 @@ import {
 } from '../../backtest/parityValidation.js'
 import type { ParityValidationRequest, ParityValidationResponse } from '../../shared/parity.js'
 import { sessionMinuteGrid } from '../../backtest/reconstruct.js'
-import { runStudy, type StudyDataSource } from '../../backtest/studyRunner.js'
+import { preflightStudy, runStudy, type StudyDataSource } from '../../backtest/studyRunner.js'
 import { computeMetrics } from '../../backtest/metrics.js'
 import { buildAnalyticsReport } from '../../backtest/conditionalPaths.js'
 import { seriesToCsv, studyToJson, tradesToCsv } from '../../backtest/exports.js'
@@ -35,6 +35,8 @@ import { writeFileSync } from 'node:fs'
 import type {
   ManagementSummary,
   StudyConfig,
+  StudyPreflight,
+  StudyProgress,
   StudyRunResult
 } from '../../shared/study.js'
 import {
@@ -109,6 +111,39 @@ function scoreObjective(metrics: StudyMetrics, objective: string): number {
   }
 }
 
+/** Formats a duration as e.g. 2m14s, for progress lines. */
+function humanDuration(ms: number): string {
+  const total = Math.round(ms / 1000)
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  return minutes > 0 ? `${minutes}m${String(seconds).padStart(2, '0')}s` : `${seconds}s`
+}
+
+/**
+ * Writes a scannable progress line to stdout.
+ *
+ * The structured log records detail for the in-app viewer; this exists so
+ * someone watching a terminal can tell at a glance whether a long study is
+ * advancing, stalled on the rate limiter, or skipping everything. A study that
+ * takes an hour needs to prove it is alive.
+ */
+function logStudyLine(progress: StudyProgress, requests: number): void {
+  const parts = [
+    `${String(progress.completed).padStart(4)}/${progress.total}`,
+    (progress.currentDate ?? '').padEnd(10),
+    `entries=${progress.tradesGenerated}`,
+    `skipped=${progress.skipped}`,
+    `req=${requests}`,
+    `elapsed=${humanDuration(progress.elapsedMs ?? 0)}`
+  ]
+  if (progress.estimatedRemainingMs !== undefined) {
+    parts.push(`eta=${humanDuration(progress.estimatedRemainingMs)}`)
+  }
+  if (progress.stage) parts.push(`[${progress.stage}]`)
+  // Written directly so it stays one tidy column in a terminal.
+  console.log('[study] ' + parts.join('  '))
+}
+
 /** Prompts for a location and writes text, returning the path or null. */
 async function saveTextFile(
   window: BrowserWindow | null,
@@ -181,6 +216,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   handle(IPC.massiveGetUnderlyingBars, (query: BarQuery) => services.provider.getUnderlyingBars(query))
 
   // --- studies --------------------------------------------------------------
+  handle(IPC.studyPreflight, (config: StudyConfig): Promise<StudyPreflight> =>
+    preflightStudy(config, buildStudySource(services))
+  )
+
   handle(IPC.studyRun, async (config: StudyConfig, label?: string): Promise<StudyRunResult> => {
     if (activeStudy) throw new Error('A study is already running. Cancel it before starting another.')
 
@@ -188,22 +227,67 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     activeStudy = controller
     const source = buildStudySource(services)
 
+    const requestsAtStart = services.queue.getStats().completed
     let lastSent = 0
+    let lastLogged = 0
+    let lastLoggedSession = -1
+
     try {
+      // A pre-flight check first, so a run that cannot produce anything says so
+      // immediately instead of an hour later.
+      const preflight = await preflightStudy(config, source)
+      log.info('study preflight', {
+        sessions: preflight.sessions,
+        dailyBars: preflight.dailyBars,
+        intradaySampled: preflight.underlyingMinuteSessions,
+        blockers: preflight.blockers,
+        warnings: preflight.warnings
+      })
+      for (const blocker of preflight.blockers) console.log('[study] BLOCKER: ' + blocker)
+      for (const warning of preflight.warnings) console.log('[study] warning: ' + warning)
+      if (preflight.blockers.length > 0) {
+        throw new Error(preflight.blockers.join(' '))
+      }
+      console.log(
+        `[study] starting ${config.from}..${config.to}  ${preflight.sessions} sessions  ` +
+          `${config.managements.length} methods  ${preflight.dailyBars} daily bars cached`
+      )
+
       const outcome = await runStudy(config, source, {
         signal: controller.signal,
+        onSkip: ({ date, reason }) => {
+          console.log(`[study]   skip ${date}: ${reason}`)
+        },
         onProgress: (progress) => {
-          // Throttled: a study touches hundreds of sessions and the renderer
-          // gains nothing from more than a few updates a second.
+          const requests = services.queue.getStats().completed - requestsAtStart
           const now = Date.now()
-          if (now - lastSent < 200) return
+
+          // One terminal line per session, not per stage, so the log stays
+          // readable while still proving the run is alive.
+          if (progress.completed !== lastLoggedSession && now - lastLogged > 250) {
+            lastLoggedSession = progress.completed
+            lastLogged = now
+            logStudyLine(progress, requests)
+          }
+
+          // The renderer is throttled harder: repainting faster than this makes
+          // the page jitter without conveying anything extra.
+          if (now - lastSent < 400) return
           lastSent = now
           const window = getWindow()
           if (window && !window.isDestroyed()) {
-            window.webContents.send(IPC.studyProgressEvent, progress)
+            window.webContents.send(IPC.studyProgressEvent, { ...progress, apiRequests: requests })
           }
         }
       })
+
+      console.log(
+        `[study] finished  ${outcome.series.length} entries  ${outcome.skipped.length} skipped  ` +
+          `${humanDuration(outcome.elapsedMs)}  ${services.queue.getStats().completed - requestsAtStart} requests`
+      )
+      for (const [reason, count] of Object.entries(outcome.skipReasons).sort((a, b) => b[1] - a[1])) {
+        console.log(`[study]   ${String(count).padStart(4)} x ${reason}`)
+      }
 
       const summaries: ManagementSummary[] = config.managements.map((id) => {
         const trades = outcome.trades.filter((t) => t.strategyId === id)
@@ -233,15 +317,33 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       const window = getWindow()
       if (window && !window.isDestroyed()) {
         window.webContents.send(IPC.studyProgressEvent, {
-          phase: 'done',
+          phase: controller.signal.aborted ? 'cancelled' : 'done',
           completed: outcome.entriesAttempted,
           total: outcome.entriesAttempted,
           tradesGenerated: outcome.series.length,
-          skipped: outcome.skipped.length
+          skipped: outcome.skipped.length,
+          skipReasons: outcome.skipReasons,
+          elapsedMs: outcome.elapsedMs,
+          apiRequests: services.queue.getStats().completed - requestsAtStart
         })
       }
 
       return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.log('[study] FAILED: ' + message)
+      const window = getWindow()
+      if (window && !window.isDestroyed()) {
+        window.webContents.send(IPC.studyProgressEvent, {
+          phase: 'failed',
+          completed: 0,
+          total: 0,
+          tradesGenerated: 0,
+          skipped: 0,
+          error: message
+        })
+      }
+      throw error
     } finally {
       activeStudy = null
     }

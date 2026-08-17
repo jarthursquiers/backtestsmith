@@ -5,7 +5,13 @@ import type { CacheStats } from './cache.js'
 import type { SchwabBackfillRequest, SchwabBackfillResult, SchwabConnectionStatus } from './schwab.js'
 import type { ChainSummary, ReconstructRequest, ReconstructResponse } from './butterfly.js'
 import type { ParityValidationRequest, ParityValidationResponse } from './parity.js'
-import type { StudyConfig, StudyProgress, StudyRunResult, StudyRunSummary } from './study.js'
+import type {
+  StudyConfig,
+  StudyPreflight,
+  StudyProgress,
+  StudyRunResult,
+  StudyRunSummary
+} from './study.js'
 import type { AnalyticsReport } from './analytics.js'
 import type { SweepAxis, SweepResult } from './sweep.js'
 import type {
@@ -41,6 +47,7 @@ export const IPC = {
   massiveGetOptionBars: 'massive:getOptionBars',
   massiveGetUnderlyingBars: 'massive:getUnderlyingBars',
 
+  studyPreflight: 'study:preflight',
   studyAnalytics: 'study:analytics',
   studyExportTrades: 'study:exportTrades',
   studyExportJson: 'study:exportJson',
@@ -128,6 +135,8 @@ export interface AppApi {
     getUnderlyingBars(query: BarQuery): Promise<BarFetchResult<UnderlyingBar>>
   }
   study: {
+    /** Checks whether a study can produce anything, before running it. */
+    preflight(config: StudyConfig): Promise<StudyPreflight>
     /** Runs a study to completion, persisting the result. */
     run(config: StudyConfig, label?: string): Promise<StudyRunResult>
     /** Requests cancellation of the run in progress. */

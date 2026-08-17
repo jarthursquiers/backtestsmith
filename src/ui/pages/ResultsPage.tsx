@@ -10,7 +10,12 @@ import {
   XAxis,
   YAxis
 } from 'recharts'
-import type { ManagementSummary, StudyRunResult, StudyRunSummary } from '../../shared/study.js'
+import {
+  normalizeSkipReason,
+  type ManagementSummary,
+  type StudyRunResult,
+  type StudyRunSummary
+} from '../../shared/study.js'
 import type { PositionSizing } from '../../shared/metrics.js'
 import {
   Badge,
@@ -192,8 +197,38 @@ export function ResultsPage() {
               )}
 
               {run.skipped.length > 0 && (
+                <div className="mt-3">
+                  <div className="mb-1.5 text-[11px] font-medium text-ink-dim">
+                    Why sessions were skipped
+                  </div>
+                  <div className="overflow-hidden rounded-md border border-line">
+                    <table className="w-full border-collapse text-[11px]">
+                      <tbody className="num">
+                        {Object.entries(
+                          run.skipped.reduce<Record<string, number>>((acc, s) => {
+                            // Group by reason with the specifics stripped, so one
+                            // shared cause reads as one line rather than fifty.
+                            const key = normalizeSkipReason(s.reason)
+                            acc[key] = (acc[key] ?? 0) + 1
+                            return acc
+                          }, {})
+                        )
+                          .sort((a, b) => b[1] - a[1])
+                          .map(([reason, count]) => (
+                            <tr key={reason} className="border-b border-line-soft last:border-0">
+                              <td className="w-14 px-3 py-1 text-right text-warn">{count}</td>
+                              <td className="px-3 py-1 text-ink-dim">{reason}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {run.skipped.length > 0 && (
                 <details className="mt-3 text-[11px]">
-                  <summary className="cursor-pointer text-ink-dim">Skipped sessions</summary>
+                  <summary className="cursor-pointer text-ink-dim">Every skipped session</summary>
                   <ul className="num mt-1 max-h-48 space-y-0.5 overflow-y-auto text-[10px] text-ink-faint">
                     {run.skipped.map((s) => (
                       <li key={s.date}>

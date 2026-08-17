@@ -65,12 +65,40 @@ export interface SkippedEntry {
 }
 
 export interface StudyProgress {
-  phase: 'entries' | 'metrics' | 'done'
+  phase: 'preflight' | 'entries' | 'saving' | 'done' | 'cancelled' | 'failed'
   completed: number
   total: number
   currentDate?: string
+  /** What the runner is doing right now, e.g. "fetching legs". */
+  stage?: string
+  /** Entries accepted so far. */
   tradesGenerated: number
   skipped: number
+  /**
+   * Live tally of why sessions were skipped, grouped by normalized reason.
+   *
+   * Surfaced during the run rather than after it: a study that skips everything
+   * should be obvious in the first few seconds, not an hour later.
+   */
+  skipReasons?: Record<string, number>
+  elapsedMs?: number
+  estimatedRemainingMs?: number
+  /** Upstream requests spent so far, so rate-limit waiting is visible. */
+  apiRequests?: number
+  /** Set when the run failed outright. */
+  error?: string
+}
+
+/** Whether a study can produce anything, checked before it runs. */
+export interface StudyPreflight {
+  sessions: number
+  dailyBars: number
+  /** Sessions sampled from the start of the range that have intraday data. */
+  underlyingMinuteSessions: number
+  /** Blocking problems: the run would produce nothing. */
+  blockers: string[]
+  /** Non-blocking concerns worth knowing before committing an hour. */
+  warnings: string[]
 }
 
 /** Metrics for one management method within a run. */
@@ -106,4 +134,22 @@ export interface StudyRunResult {
   /** Application version and commit, for reproducibility. */
   appVersion: string
   gitCommit?: string
+}
+
+/**
+ * Collapses a skip reason to a stable category for grouping.
+ *
+ * Reasons embed specifics - dates, strikes, percentages - which would make every
+ * skip its own group and obscure that fifty sessions failed for one shared
+ * cause. Stripping the specifics is what turns a list into a diagnosis.
+ *
+ * Lives in shared because both the runner (which tallies live) and the results
+ * screen (which groups a stored run) must agree on the categories.
+ */
+export function normalizeSkipReason(reason: string): string {
+  return reason
+    .replace(/\d{4}-\d{2}-\d{2}/g, 'DATE')
+    .replace(/\d+(\.\d+)?%/g, 'N%')
+    .replace(/\b\d+(\.\d+)?\b/g, 'N')
+    .trim()
 }

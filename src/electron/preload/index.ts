@@ -45,6 +45,7 @@ const api: AppApi = {
     getUnderlyingBars: (query) => invoke(IPC.massiveGetUnderlyingBars, query)
   },
   study: {
+    preflight: (config) => invoke(IPC.studyPreflight, config),
     run: (config, label) => invoke(IPC.studyRun, config, label),
     cancel: () => invoke(IPC.studyCancel),
     list: (limit) => invoke(IPC.studyList, limit),
