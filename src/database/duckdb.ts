@@ -178,6 +178,10 @@ export type AppendType = 'varchar' | 'double' | 'bigint' | 'integer'
 export class Database {
   private instance: DuckDBInstance | null = null
   private connection: DuckDBConnection | null = null
+  /** Tail of the serialized operation queue. */
+  private queue: Promise<unknown> = Promise.resolve()
+  /** True while a transaction owns the queue, making the lock re-entrant. */
+  private inTransaction = false
 
   constructor(private readonly filePath: string) {}
 
@@ -223,9 +227,36 @@ export class Database {
     }
   }
 
+  /**
+   * Serializes database work onto a single queue.
+   *
+   * There is one DuckDB connection, so a statement issued while another
+   * operation's transaction is open would join that transaction, and two
+   * overlapping BEGINs fail outright with "cannot start a transaction within a
+   * transaction". Callers legitimately fetch in parallel - three butterfly legs,
+   * or a call and a put - so the parallelism has to be allowed at the network
+   * layer and removed here.
+   *
+   * The lock is re-entrant: statements issued from inside a transaction body are
+   * already within the critical section, since the transaction holds the queue
+   * for its whole duration and nothing else can interleave.
+   */
+  private serialize<T>(work: () => Promise<T>): Promise<T> {
+    if (this.inTransaction) return work()
+    // Chain on both settle paths so one failure cannot stall the queue.
+    const result = this.queue.then(work, work)
+    this.queue = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
+  }
+
   /** Runs a statement with optional positional (`?`) parameters. */
-  async run(sql: string, params: unknown[] = []): Promise<void> {
-    await this.conn().run(sql, params as never)
+  run(sql: string, params: unknown[] = []): Promise<void> {
+    return this.serialize(async () => {
+      await this.conn().run(sql, params as never)
+    })
   }
 
   /**
@@ -235,14 +266,16 @@ export class Database {
    * `number` here because every bigint in this schema is an epoch millisecond
    * or a count, both far inside Number.MAX_SAFE_INTEGER.
    */
-  async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
-    const reader = await this.conn().runAndReadAll(sql, params as never)
-    return reader.getRowObjects().map((row) => {
-      const out: Record<string, unknown> = {}
-      for (const [key, value] of Object.entries(row)) {
-        out[key] = typeof value === 'bigint' ? Number(value) : value
-      }
-      return out as T
+  query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+    return this.serialize(async () => {
+      const reader = await this.conn().runAndReadAll(sql, params as never)
+      return reader.getRowObjects().map((row) => {
+        const out: Record<string, unknown> = {}
+        for (const [key, value] of Object.entries(row)) {
+          out[key] = typeof value === 'bigint' ? Number(value) : value
+        }
+        return out as T
+      })
     })
   }
 
@@ -251,18 +284,28 @@ export class Database {
     return rows[0] ?? null
   }
 
-  /** Runs work inside a transaction, rolling back on any failure. */
-  async transaction<T>(work: () => Promise<T>): Promise<T> {
-    const conn = this.conn()
-    await conn.run('BEGIN TRANSACTION')
-    try {
-      const result = await work()
-      await conn.run('COMMIT')
-      return result
-    } catch (error) {
-      await conn.run('ROLLBACK')
-      throw error
-    }
+  /**
+   * Runs work inside a transaction, rolling back on any failure.
+   *
+   * Holds the operation queue for its whole duration, so concurrent callers wait
+   * rather than colliding on the single connection.
+   */
+  transaction<T>(work: () => Promise<T>): Promise<T> {
+    return this.serialize(async () => {
+      const conn = this.conn()
+      await conn.run('BEGIN TRANSACTION')
+      this.inTransaction = true
+      try {
+        const result = await work()
+        await conn.run('COMMIT')
+        return result
+      } catch (error) {
+        await conn.run('ROLLBACK')
+        throw error
+      } finally {
+        this.inTransaction = false
+      }
+    })
   }
 
   /**
@@ -272,8 +315,16 @@ export class Database {
    * appender is strict per column, so a DOUBLE column handed an integer-valued
    * price like 2.0 would be appended as BIGINT and rejected.
    */
-  async append(table: string, columnTypes: readonly AppendType[], rows: readonly unknown[][]): Promise<void> {
-    if (rows.length === 0) return
+  append(table: string, columnTypes: readonly AppendType[], rows: readonly unknown[][]): Promise<void> {
+    if (rows.length === 0) return Promise.resolve()
+    return this.serialize(() => this.appendRaw(table, columnTypes, rows))
+  }
+
+  private async appendRaw(
+    table: string,
+    columnTypes: readonly AppendType[],
+    rows: readonly unknown[][]
+  ): Promise<void> {
     const appender = await this.conn().createAppender(table)
     try {
       for (const row of rows) {

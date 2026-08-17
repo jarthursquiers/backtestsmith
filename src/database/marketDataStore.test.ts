@@ -193,6 +193,56 @@ describe('MarketDataStore persistence', () => {
     await db.close()
   })
 
+  it('survives concurrent writes on the single connection', async () => {
+    /*
+     * Regression: there is one DuckDB connection, so two overlapping
+     * transactions failed with "cannot start a transaction within a
+     * transaction". Callers fetch in parallel by design - three butterfly legs,
+     * or a call and a put for parity - so the database has to serialize the
+     * writes itself rather than forbidding the parallelism.
+     */
+    const db = new Database(':memory:')
+    await db.open()
+    const store = new MarketDataStore(db)
+
+    const writes = ['2025-06-16', '2025-06-17', '2025-06-18', '2025-06-20'].map((date) =>
+      store.putBars('option', TICKER, [date], [bar(date, 9, 35, 2.2), bar(date, 9, 36, 2.3)], MINUTE, 'massive')
+    )
+    await expect(Promise.all(writes)).resolves.toBeDefined()
+
+    const bars = await store.getOptionBars(
+      TICKER,
+      ['2025-06-16', '2025-06-17', '2025-06-18', '2025-06-20'],
+      MINUTE
+    )
+    expect(bars).toHaveLength(8)
+
+    await db.close()
+  })
+
+  it('interleaves reads and writes without joining an open transaction', async () => {
+    const db = new Database(':memory:')
+    await db.open()
+    const store = new MarketDataStore(db)
+
+    const results = await Promise.all([
+      store.putBars('option', TICKER, ['2025-06-17'], [bar('2025-06-17', 9, 35, 2.2)], MINUTE, 'massive'),
+      store.getOptionBars(TICKER, ['2025-06-17'], MINUTE),
+      store.putContracts(
+        [{ ticker: TICKER, underlying: 'SPX', expirationDate: '2025-06-20', strike: 5875, type: 'put' }],
+        'massive'
+      ),
+      store.stats(0)
+    ])
+    expect(results).toHaveLength(4)
+
+    // Both writes landed despite running concurrently with reads.
+    expect(await store.getOptionBars(TICKER, ['2025-06-17'], MINUTE)).toHaveLength(1)
+    expect(await store.getContracts('SPX', '2025-06-20', 'put')).toHaveLength(1)
+
+    await db.close()
+  })
+
   it('reports stats and clears cleanly', async () => {
     const db = new Database(':memory:')
     await db.open()
