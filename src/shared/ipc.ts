@@ -138,7 +138,7 @@ export interface AppApi {
     previewCsv(filePath: string, options: CsvImportOptions): Promise<CsvPreview>
     importCsv(filePath: string, options: CsvImportOptions): Promise<CsvImportResult>
     /** Reads only from the local cache; never calls a provider. */
-    cachedBars(ticker: string, from: string, to: string): Promise<UnderlyingBar[]>
+    cachedBars(ticker: string, from: string, to: string, timespan?: string): Promise<UnderlyingBar[]>
     coverage(ticker: string, from: string, to: string): Promise<UnderlyingCoverageDay[]>
   }
   cache: {

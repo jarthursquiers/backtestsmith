@@ -20,7 +20,7 @@ const log = createLogger('database')
  */
 
 /** Bumped whenever the schema changes; migrations run in order on open. */
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 
 const MIGRATIONS: { version: number; statements: string[] }[] = [
   {
@@ -110,6 +110,64 @@ const MIGRATIONS: { version: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS idx_option_bars_ticker_date ON option_bars (ticker, market_date)`,
       `CREATE INDEX IF NOT EXISTS idx_underlying_bars_ticker_date ON underlying_bars (ticker, market_date)`,
       `CREATE INDEX IF NOT EXISTS idx_contracts_lookup ON option_contracts (underlying, expiration_date, contract_type)`
+    ]
+  },
+  {
+    /*
+     * v1 stored bars keyed by (ticker, ts) with no record of their bar size, and
+     * replaced them by (ticker, market_date). Daily and minute bars for one
+     * ticker therefore occupied the same rows: downloading daily history
+     * silently deleted the minute bars for every overlapping date, while
+     * bar_coverage went on reporting them as present.
+     *
+     * The tables are rebuilt with the bar shape in the key. Existing rows cannot
+     * be migrated because their shape was never recorded, and guessing it would
+     * be exactly the kind of invention this codebase avoids - so the bar tables
+     * and the coverage ledger are cleared and re-downloaded. Contracts, which
+     * have no bar shape, are unaffected.
+     */
+    version: 2,
+    statements: [
+      `DROP TABLE IF EXISTS option_bars`,
+      `DROP TABLE IF EXISTS underlying_bars`,
+
+      `CREATE TABLE option_bars (
+        ticker VARCHAR NOT NULL,
+        timespan VARCHAR NOT NULL,
+        multiplier INTEGER NOT NULL,
+        ts BIGINT NOT NULL,
+        market_date VARCHAR NOT NULL,
+        open DOUBLE NOT NULL,
+        high DOUBLE NOT NULL,
+        low DOUBLE NOT NULL,
+        close DOUBLE NOT NULL,
+        volume DOUBLE,
+        vwap DOUBLE,
+        transactions INTEGER,
+        PRIMARY KEY (ticker, timespan, multiplier, ts)
+      )`,
+
+      `CREATE TABLE underlying_bars (
+        ticker VARCHAR NOT NULL,
+        timespan VARCHAR NOT NULL,
+        multiplier INTEGER NOT NULL,
+        ts BIGINT NOT NULL,
+        market_date VARCHAR NOT NULL,
+        open DOUBLE NOT NULL,
+        high DOUBLE NOT NULL,
+        low DOUBLE NOT NULL,
+        close DOUBLE NOT NULL,
+        volume DOUBLE,
+        vwap DOUBLE,
+        transactions INTEGER,
+        PRIMARY KEY (ticker, timespan, multiplier, ts)
+      )`,
+
+      // Coverage described rows that no longer exist, so it must go too.
+      `DELETE FROM bar_coverage`,
+
+      `CREATE INDEX IF NOT EXISTS idx_option_bars_lookup ON option_bars (ticker, timespan, multiplier, market_date)`,
+      `CREATE INDEX IF NOT EXISTS idx_underlying_bars_lookup ON underlying_bars (ticker, timespan, multiplier, market_date)`
     ]
   }
 ]

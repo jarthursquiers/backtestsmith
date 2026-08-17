@@ -165,7 +165,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     // fetch here would spend a request to earn an HTTP 403.
     const underlyingBars = await services.store.getUnderlyingBars(
       'I:SPX',
-      tradingDaysBetween(request.entryDate, request.expiration)
+      tradingDaysBetween(request.entryDate, request.expiration),
+      { timespan: 'minute', multiplier: 1 }
     )
 
     const missingData: MissingDataPolicy =
@@ -420,10 +421,13 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     }
   })
 
-  handle(IPC.underlyingCachedBars, (ticker: string, from: string, to: string) => {
+  handle(IPC.underlyingCachedBars, (ticker: string, from: string, to: string, timespan?: string) => {
     // Cache-only by design: index data is not entitled on the Options plans, so
     // reaching upstream here would burn a request to earn an HTTP 403.
-    return services.store.getUnderlyingBars(ticker, tradingDaysBetween(from, to))
+    return services.store.getUnderlyingBars(ticker, tradingDaysBetween(from, to), {
+      timespan: timespan ?? 'minute',
+      multiplier: 1
+    })
   })
 
   handle(IPC.underlyingCoverage, (ticker: string, from: string, to: string): Promise<UnderlyingCoverageDay[]> => {

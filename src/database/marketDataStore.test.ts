@@ -10,6 +10,8 @@ import { MarketDataStore } from './marketDataStore.js'
 
 const TICKER = 'O:SPXW250620P05875000'
 const SHAPE = { timespan: 'minute', multiplier: 1 }
+const MINUTE = { timespan: 'minute', multiplier: 1 }
+const DAILY = { timespan: 'day', multiplier: 1 }
 
 function bar(date: string, hour: number, minute: number, close: number): OptionBar {
   return {
@@ -140,6 +142,53 @@ describe('MarketDataStore persistence', () => {
     const [read] = await store.getUnderlyingBars('I:SPX', ['2025-06-17'])
     expect(read?.close).toBe(6002)
     expect(read?.volume).toBeUndefined()
+
+    await db.close()
+  })
+
+  it('keeps daily and minute bars for the same ticker independent', async () => {
+    /*
+     * Regression: bars were once keyed without their bar size and replaced by
+     * (ticker, market_date), so downloading a two-year daily history silently
+     * deleted every minute bar on the same dates while coverage went on
+     * reporting them as present. 8,190 real minute bars were lost this way.
+     */
+    const db = new Database(':memory:')
+    await db.open()
+    const store = new MarketDataStore(db)
+
+    const minuteBars = [bar('2025-06-17', 9, 35, 2.2), bar('2025-06-17', 9, 36, 2.3)]
+    await store.putBars('option', TICKER, ['2025-06-17'], minuteBars, MINUTE, 'massive')
+
+    const dailyBar = bar('2025-06-17', 9, 30, 2.5)
+    await store.putBars('option', TICKER, ['2025-06-17'], [dailyBar], DAILY, 'massive')
+
+    // Writing the daily bar must not disturb the minute bars.
+    expect(await store.getOptionBars(TICKER, ['2025-06-17'], MINUTE)).toHaveLength(2)
+    expect(await store.getOptionBars(TICKER, ['2025-06-17'], DAILY)).toHaveLength(1)
+
+    // And re-writing the minute bars must not disturb the daily bar.
+    await store.putBars('option', TICKER, ['2025-06-17'], minuteBars, MINUTE, 'massive')
+    expect(await store.getOptionBars(TICKER, ['2025-06-17'], DAILY)).toHaveLength(1)
+
+    await db.close()
+  })
+
+  it('keeps underlying daily and minute independent as well', async () => {
+    const db = new Database(':memory:')
+    await db.open()
+    const store = new MarketDataStore(db)
+    const mk = (h: number, m: number, c: number): UnderlyingBar => ({
+      ticker: 'I:SPX',
+      timestamp: easternToTimestamp('2025-06-17', h, m),
+      open: c, high: c, low: c, close: c
+    })
+
+    await store.putBars('underlying', 'I:SPX', ['2025-06-17'], [mk(9, 35, 6001), mk(9, 36, 6002)], MINUTE, 'schwab')
+    await store.putBars('underlying', 'I:SPX', ['2025-06-17'], [mk(9, 30, 6000)], DAILY, 'schwab')
+
+    expect(await store.getUnderlyingBars('I:SPX', ['2025-06-17'], MINUTE)).toHaveLength(2)
+    expect(await store.getUnderlyingBars('I:SPX', ['2025-06-17'], DAILY)).toHaveLength(1)
 
     await db.close()
   })

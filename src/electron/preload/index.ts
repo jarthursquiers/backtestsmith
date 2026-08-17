@@ -62,7 +62,8 @@ const api: AppApi = {
     pickFile: () => invoke(IPC.underlyingPickFile),
     previewCsv: (filePath, options) => invoke(IPC.underlyingPreviewCsv, filePath, options),
     importCsv: (filePath, options) => invoke(IPC.underlyingImportCsv, filePath, options),
-    cachedBars: (ticker, from, to) => invoke(IPC.underlyingCachedBars, ticker, from, to),
+    cachedBars: (ticker, from, to, timespan) =>
+      invoke(IPC.underlyingCachedBars, ticker, from, to, timespan),
     coverage: (ticker, from, to) => invoke(IPC.underlyingCoverage, ticker, from, to)
   },
   cache: {

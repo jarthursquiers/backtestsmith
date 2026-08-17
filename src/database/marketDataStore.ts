@@ -23,8 +23,14 @@ export interface BarShape {
   multiplier: number
 }
 
-const OPTION_BAR_COLUMNS: readonly AppendType[] = [
+/** Default shape for reads; the research engine works in one-minute bars. */
+export const MINUTE_BARS: BarShape = { timespan: 'minute', multiplier: 1 }
+export const DAILY_BARS: BarShape = { timespan: 'day', multiplier: 1 }
+
+const BAR_COLUMNS: readonly AppendType[] = [
   'varchar', // ticker
+  'varchar', // timespan
+  'integer', // multiplier
   'bigint',  // ts
   'varchar', // market_date
   'double',  // open
@@ -180,14 +186,21 @@ export class MarketDataStore {
       for (const date of allDates) {
         const dayBars = byDate.get(date) ?? []
 
-        await this.db.run(`DELETE FROM ${table} WHERE ticker = ? AND market_date = ?`, [ticker, date])
+        // The bar shape must be part of the delete, or replacing minute data
+        // would wipe the daily bars for the same ticker and date.
+        await this.db.run(
+          `DELETE FROM ${table} WHERE ticker = ? AND market_date = ? AND timespan = ? AND multiplier = ?`,
+          [ticker, date, shape.timespan, shape.multiplier]
+        )
 
         if (dayBars.length > 0) {
           await this.db.append(
             table,
-            OPTION_BAR_COLUMNS,
+            BAR_COLUMNS,
             dayBars.map((b) => [
               ticker,
+              shape.timespan,
+              shape.multiplier,
               b.timestamp,
               date,
               b.open,
@@ -219,26 +232,32 @@ export class MarketDataStore {
 
   async getOptionBars(
     ticker: string,
-    dates: readonly MarketDate[]
+    dates: readonly MarketDate[],
+    shape: BarShape = MINUTE_BARS
   ): Promise<OptionBar[]> {
     if (dates.length === 0) return []
     const placeholders = dates.map(() => '?').join(', ')
     const rows = await this.db.query<Record<string, unknown>>(
-      `SELECT * FROM option_bars WHERE ticker = ? AND market_date IN (${placeholders}) ORDER BY ts ASC`,
-      [ticker, ...dates]
+      `SELECT * FROM option_bars
+        WHERE ticker = ? AND timespan = ? AND multiplier = ? AND market_date IN (${placeholders})
+        ORDER BY ts ASC`,
+      [ticker, shape.timespan, shape.multiplier, ...dates]
     )
     return rows.map((r) => rowToOptionBar(r))
   }
 
   async getUnderlyingBars(
     ticker: string,
-    dates: readonly MarketDate[]
+    dates: readonly MarketDate[],
+    shape: BarShape = MINUTE_BARS
   ): Promise<UnderlyingBar[]> {
     if (dates.length === 0) return []
     const placeholders = dates.map(() => '?').join(', ')
     const rows = await this.db.query<Record<string, unknown>>(
-      `SELECT * FROM underlying_bars WHERE ticker = ? AND market_date IN (${placeholders}) ORDER BY ts ASC`,
-      [ticker, ...dates]
+      `SELECT * FROM underlying_bars
+        WHERE ticker = ? AND timespan = ? AND multiplier = ? AND market_date IN (${placeholders})
+        ORDER BY ts ASC`,
+      [ticker, shape.timespan, shape.multiplier, ...dates]
     )
     return rows.map((r) => rowToUnderlyingBar(r))
   }
@@ -282,15 +301,17 @@ export class MarketDataStore {
   async getUnderlyingCoverage(
     ticker: string,
     from: MarketDate,
-    to: MarketDate
+    to: MarketDate,
+    shape?: BarShape
   ): Promise<{ marketDate: string; barCount: number; source: string; fetchedAt: number }[]> {
     return this.db.query(
       `SELECT market_date AS "marketDate", bar_count AS "barCount",
               provider AS source, fetched_at AS "fetchedAt"
          FROM bar_coverage
         WHERE ticker = ? AND kind = 'underlying' AND market_date BETWEEN ? AND ?
+          ${shape ? 'AND timespan = ? AND multiplier = ?' : ''}
         ORDER BY market_date ASC`,
-      [ticker, from, to]
+      shape ? [ticker, from, to, shape.timespan, shape.multiplier] : [ticker, from, to]
     )
   }
 
