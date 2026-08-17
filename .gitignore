@@ -6,7 +6,7 @@ release/
 .env
 .env.local
 .DS_Store
-data/
+/data/
 coverage/
 .vite/
 *.tsbuildinfo

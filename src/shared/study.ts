@@ -102,6 +102,8 @@ export interface StudyProgress {
    * should be obvious in the first few seconds, not an hour later.
    */
   skipReasons?: Record<string, number>
+  /** Most recent raw skip records, including data-quality evidence. */
+  recentSkips?: SkippedEntry[]
   elapsedMs?: number
   estimatedRemainingMs?: number
   /** Upstream requests spent so far, so rate-limit waiting is visible. */
@@ -168,6 +170,8 @@ export interface StudyRunResult {
  * screen (which groups a stored run) must agree on the categories.
  */
 export function normalizeSkipReason(reason: string): string {
+  if (reason.startsWith('data quality ')) return 'option data quality below threshold'
+  if (reason.startsWith('expected move unavailable:')) return 'expected move could not be measured'
   return reason
     .replace(/\d{4}-\d{2}-\d{2}/g, 'DATE')
     .replace(/\d+(\.\d+)?%/g, 'N%')

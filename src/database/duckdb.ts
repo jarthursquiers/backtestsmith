@@ -21,7 +21,7 @@ const log = createLogger('database')
  */
 
 /** Bumped whenever the schema changes; migrations run in order on open. */
-const SCHEMA_VERSION = 3
+const SCHEMA_VERSION = 4
 
 const MIGRATIONS: { version: number; statements: string[] }[] = [
   {
@@ -224,6 +224,15 @@ const MIGRATIONS: { version: number; statements: string[] }[] = [
       )`,
 
       `CREATE INDEX IF NOT EXISTS idx_study_trades_run ON study_trades (run_id, strategy_id)`
+    ]
+  },
+  {
+    version: 4,
+    statements: [
+      `ALTER TABLE option_bars ADD COLUMN IF NOT EXISTS bid DOUBLE`,
+      `ALTER TABLE option_bars ADD COLUMN IF NOT EXISTS ask DOUBLE`,
+      `ALTER TABLE option_bars ADD COLUMN IF NOT EXISTS bid_size DOUBLE`,
+      `ALTER TABLE option_bars ADD COLUMN IF NOT EXISTS ask_size DOUBLE`
     ]
   }
 ]

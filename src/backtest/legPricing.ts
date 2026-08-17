@@ -15,6 +15,12 @@ import type { LegPricingModel, LegQuote, LegRole, MissingDataPolicy } from '../d
 
 /** Extracts a single price from a bar under the chosen model. */
 export function legPrice(bar: OptionBar, model: LegPricingModel): number {
+  // Quote feeds are materially better than asynchronous option trades. Their
+  // NBBO midpoint is the executable-neutral mark used regardless of the legacy
+  // trade-bar display model selected by an older saved study.
+  if (bar.bid !== undefined && bar.ask !== undefined && bar.bid >= 0 && bar.ask >= bar.bid) {
+    return (bar.bid + bar.ask) / 2
+  }
   switch (model) {
     case 'close':
       return bar.close

@@ -196,7 +196,7 @@ describe('study runner', () => {
 
     expect(permissive.series.length).toBeGreaterThan(0)
     expect(strict.series).toHaveLength(0)
-    expect(strict.skipped.some((s) => /data quality below threshold/.test(s.reason))).toBe(true)
+    expect(strict.skipped.some((s) => /data quality .*minutes priced/.test(s.reason))).toBe(true)
   })
 
   it('reports progress and can be cancelled', async () => {
@@ -416,6 +416,38 @@ describe('entry window', () => {
     // The window scans forward to the next print at 09:50.
     const windowed = await runStudy({ ...sparseConfig, entryWindowMinutes: 20 }, sparseSource())
     expect(windowed.series.length).toBeGreaterThan(0)
+  })
+
+  it('keeps scanning when SPX is known but the ATM straddle prints later', async () => {
+    const delayedStraddle = makeSource({
+      async getOptionBars(ticker, from, to) {
+        const out: OptionBar[] = []
+        const price = ticker.includes('P') ? 12 : 10
+        for (const date of tradingDaysBetween(from, to)) {
+          const first = easternToTimestamp(date, 9, 50)
+          const count = sessionMinuteCount(date) - 20
+          for (let i = 0; i < count; i++) {
+            const timestamp = first + i * 60_000
+            out.push({ ticker, timestamp, open: price, high: price, low: price, close: price, volume: 1 })
+          }
+        }
+        return out
+      }
+    })
+    const config = {
+      ...CONFIG,
+      from: '2025-06-02',
+      to: '2025-06-02',
+      placement: { type: 'expectedMove' as const, buffer: 0 }
+    }
+
+    const exactOnly = await runStudy({ ...config, entryWindowMinutes: 0 }, delayedStraddle)
+    expect(exactOnly.series).toHaveLength(0)
+    expect(exactOnly.skipped[0]?.reason).toMatch(/expected move unavailable.*call bars.*first 09:50/)
+
+    const windowed = await runStudy({ ...config, entryWindowMinutes: 20 }, delayedStraddle)
+    expect(windowed.series).toHaveLength(1)
+    expect(windowed.series[0]?.entryTimestamp).toBe(easternToTimestamp('2025-06-02', 9, 50))
   })
 
   it('records the minute actually filled, never earlier than requested', async () => {

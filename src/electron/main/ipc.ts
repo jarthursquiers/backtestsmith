@@ -227,6 +227,18 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     services.applySettings()
   })
 
+  handle(IPC.thetaSecretsStatus, () => services.thetaSecrets.status())
+  handle(IPC.thetaSecretsSetApiKey, (key: string) => {
+    const result = services.thetaSecrets.setApiKey(key)
+    services.applySettings()
+    return result
+  })
+  handle(IPC.thetaSecretsClear, () => {
+    services.thetaSecrets.clearApiKey()
+    services.applySettings()
+  })
+  handle(IPC.thetaTestConnection, () => services.thetaUpstream.testConnection())
+
   // --- Massive --------------------------------------------------------------
   handle(IPC.massiveTestConnection, () => services.upstream.testConnection())
   handle(IPC.massiveGetContracts, (query: ContractQuery) => services.provider.getContracts(query))
@@ -245,7 +257,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     activeStudy = controller
     const source = buildStudySource(services, controller.signal)
 
-    const requestsAtStart = services.queue.getStats().completed
+    const providerRequests = (): number => services.queue.getStats().completed + services.thetaClient.completedRequests
+    const requestsAtStart = providerRequests()
     const orchestrationStartedAt = Date.now()
     let lastSent = 0
     let lastLogged = 0
@@ -268,7 +281,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
               tradesGenerated: 0,
               skipped: 0,
               elapsedMs: Date.now() - orchestrationStartedAt,
-              apiRequests: services.queue.getStats().completed - requestsAtStart
+              apiRequests: providerRequests() - requestsAtStart
             }
             const window = getWindow()
             if (window && !window.isDestroyed()) {
@@ -295,7 +308,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           tradesGenerated: 0,
           skipped: 0,
           elapsedMs: Date.now() - orchestrationStartedAt,
-          apiRequests: services.queue.getStats().completed - requestsAtStart
+          apiRequests: providerRequests() - requestsAtStart
         } satisfies StudyProgress)
       }
       const preflight = await preflightStudy(config, source)
@@ -322,7 +335,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           console.log(`[study]   skip ${date}: ${reason}`)
         },
         onProgress: (progress) => {
-          const requests = services.queue.getStats().completed - requestsAtStart
+          const requests = providerRequests() - requestsAtStart
           const now = Date.now()
 
           // One terminal line per session, not per stage, so the log stays
@@ -346,7 +359,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
       console.log(
         `[study] finished  ${outcome.series.length} entries  ${outcome.skipped.length} skipped  ` +
-          `${humanDuration(outcome.elapsedMs)}  ${services.queue.getStats().completed - requestsAtStart} requests`
+          `${humanDuration(outcome.elapsedMs)}  ${providerRequests() - requestsAtStart} requests`
       )
       for (const [reason, count] of Object.entries(outcome.skipReasons).sort((a, b) => b[1] - a[1])) {
         console.log(`[study]   ${String(count).padStart(4)} x ${reason}`)
@@ -387,7 +400,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           skipped: outcome.skipped.length,
           skipReasons: outcome.skipReasons,
           elapsedMs: Date.now() - orchestrationStartedAt,
-          apiRequests: services.queue.getStats().completed - requestsAtStart
+          apiRequests: providerRequests() - requestsAtStart
         })
       }
 
@@ -404,7 +417,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           tradesGenerated: 0,
           skipped: 0,
           elapsedMs: Date.now() - orchestrationStartedAt,
-          apiRequests: services.queue.getStats().completed - requestsAtStart,
+          apiRequests: providerRequests() - requestsAtStart,
           error: message
         })
       }
@@ -548,7 +561,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   // --- put-call parity validation -------------------------------------------
   handle(IPC.parityValidate, async (request: ParityValidationRequest): Promise<ParityValidationResponse> => {
-    const requestsBefore = services.queue.getStats().completed
+    const requestsBefore = services.queue.getStats().completed + services.thetaClient.completedRequests
     const sessions = tradingDaysBetween(request.from, request.to)
     const skipped: { date: string; reason: string }[] = []
     const sessionsUsed: string[] = []
@@ -683,7 +696,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       sessionsUsed,
       skipped,
       strikesRequested: [...strikesRequested].sort((a, b) => a - b),
-      apiRequests: services.queue.getStats().completed - requestsBefore
+      apiRequests: services.queue.getStats().completed + services.thetaClient.completedRequests - requestsBefore
     }
   })
 

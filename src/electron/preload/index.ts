@@ -38,6 +38,12 @@ const api: AppApi = {
     setApiKey: (key) => invoke(IPC.secretsSetApiKey, key),
     clear: () => invoke(IPC.secretsClear)
   },
+  theta: {
+    status: () => invoke(IPC.thetaSecretsStatus),
+    setApiKey: (key) => invoke(IPC.thetaSecretsSetApiKey, key),
+    clear: () => invoke(IPC.thetaSecretsClear),
+    testConnection: () => invoke(IPC.thetaTestConnection)
+  },
   massive: {
     testConnection: () => invoke(IPC.massiveTestConnection),
     getContracts: (query) => invoke(IPC.massiveGetContracts, query),

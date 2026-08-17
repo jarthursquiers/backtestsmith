@@ -1,6 +1,6 @@
 import type { OptionBar, UnderlyingBar } from '../domain/bars.js'
 import type { OptionContract, OptionType } from '../domain/contracts.js'
-import type { ButterflySeries, MissingDataPolicy, PricingAssumptions } from '../domain/butterfly.js'
+import type { ButterflyDefinition, ButterflySeries, MissingDataPolicy, PricingAssumptions } from '../domain/butterfly.js'
 import type { TradeResult } from '../shared/trade.js'
 import {
   normalizeSkipReason,
@@ -13,6 +13,7 @@ import {
 import {
   easternToTimestamp,
   parseTimeOfDay,
+  toEastern,
   tradingDaysBetween,
   type MarketDate
 } from '../core/time/marketTime.js'
@@ -223,6 +224,7 @@ export async function runStudy(
       tradesGenerated: series.length,
       skipped: skipped.length,
       skipReasons: { ...skipReasons },
+      recentSkips: skipped.slice(-5),
       elapsedMs,
       // Linear extrapolation from work already done. Crude, but the dominant
       // cost is a fixed per-request wait, so it is close enough to be useful.
@@ -291,29 +293,40 @@ export async function runStudy(
 
     // --- resolve the index level at entry, and the expected move -------------
     const chainForStrikes = await source.getChain(config.underlying, choice.expiration, optionTypeForChain)
-    const callChain = await source.getChain(config.underlying, choice.expiration, 'call')
+    const callChain = optionTypeForChain === 'call'
+      ? chainForStrikes
+      : await source.getChain(config.underlying, choice.expiration, 'call')
+    const putChain = optionTypeForChain === 'put'
+      ? chainForStrikes
+      : await source.getChain(config.underlying, choice.expiration, 'put')
     const rootOk = (c: OptionContract): boolean =>
       !config.preferredRoot || (c.root ?? '').toUpperCase() === config.preferredRoot.toUpperCase()
-
-    const putStrikes = chainForStrikes.filter(rootOk).map((c) => c.strike)
-    const atmStrike = nearestStrike(previous.close, [...new Set(putStrikes)].sort((a, b) => a - b))
-    if (atmStrike === null) {
-      skip('no strikes listed for the chosen expiration')
-      continue
-    }
-
-    const atmCall = callChain.find((c) => rootOk(c) && c.strike === atmStrike)
-    const atmPut = chainForStrikes.find((c) => rootOk(c) && c.strike === atmStrike)
-
-    let underlyingAtEntry: number | undefined
-    let expectedMove: number | null = null
-    /** Minute the entry is actually attributed to, which may trail the request. */
-    let filledAt = entryTimestamp
 
     const cachedMinutes = await source.getUnderlyingMinutes(indexTicker, entryDate)
     const cachedByMinute = new Map(
       cachedMinutes.map((b) => [Math.floor(b.timestamp / 60_000) * 60_000, b.close])
     )
+
+    // The actual entry-minute index is a better ATM reference than yesterday's
+    // close. The latter remains a fallback for providers without index minutes.
+    const strikeReference = cachedByMinute.get(entryTimestamp) ?? previous.close
+    const commonStrikes = putChain
+      .filter(rootOk)
+      .map((c) => c.strike)
+      .filter((strike) => callChain.some((c) => rootOk(c) && c.strike === strike))
+    const atmStrike = nearestStrike(strikeReference, [...new Set(commonStrikes)].sort((a, b) => a - b))
+    if (atmStrike === null) {
+      skip('no strike has both an SPXW call and put for the chosen expiration')
+      continue
+    }
+
+    const atmCall = callChain.find((c) => rootOk(c) && c.strike === atmStrike)
+    const atmPut = putChain.find((c) => rootOk(c) && c.strike === atmStrike)
+
+    let underlyingAtEntry: number | undefined
+    let expectedMove: number | null = null
+    /** Minute the entry is actually attributed to, which may trail the request. */
+    let filledAt = entryTimestamp
 
     /*
      * One straddle fetch serves two purposes: expected-move placement, and
@@ -344,11 +357,11 @@ export async function runStudy(
     const windowMinutes = Math.max(0, config.entryWindowMinutes ?? 15)
     for (let offset = 0; offset <= windowMinutes; offset++) {
       const minute = entryTimestamp + offset * 60_000
+      let candidateUnderlying: number | undefined
 
       const cached = cachedByMinute.get(minute)
       if (cached !== undefined) {
-        underlyingAtEntry = cached
-        filledAt = minute
+        candidateUnderlying = cached
       } else if (straddle) {
         const call = resolveLegQuote(straddle.call.ticker, minute, straddle.call.index, straddle.call.minutes, config.pricing.model, missingData)
         const put = resolveLegQuote(straddle.put.ticker, minute, straddle.put.index, straddle.put.minutes, config.pricing.model, missingData)
@@ -358,13 +371,48 @@ export async function runStudy(
             { yearsToExpiry: yearsBetween(minute, easternToTimestamp(choice.expiration, 16, 0)) }
           )
           if (estimate) {
-            underlyingAtEntry = estimate.spot
-            filledAt = minute
+            candidateUnderlying = estimate.spot
           }
         }
       }
 
-      if (underlyingAtEntry !== undefined) break
+      if (candidateUnderlying === undefined) continue
+
+      const candidateMove = straddle
+        ? expectedMoveFromStraddle(
+            {
+              underlyingAtEntry: candidateUnderlying,
+              strike: atmStrike,
+              callBars: [],
+              putBars: [],
+              timestamp: minute,
+              model: config.pricing.model,
+              missingData
+            },
+            straddle
+          )
+        : null
+
+      // Expected-move placement needs both the index and the straddle. Keep
+      // scanning the configured entry window until both are measurable.
+      if (config.placement.type === 'expectedMove' && candidateMove === null) continue
+
+      underlyingAtEntry = candidateUnderlying
+      expectedMove = candidateMove?.points ?? null
+      filledAt = minute
+      break
+    }
+
+    if (underlyingAtEntry === undefined && config.placement.type === 'expectedMove') {
+      const hadUnderlyingInWindow = Array.from({ length: windowMinutes + 1 }, (_, offset) =>
+        cachedByMinute.has(entryTimestamp + offset * 60_000)
+      ).some(Boolean)
+      if (hadUnderlyingInWindow) {
+        const details = describeStraddleData(atmStrike, straddle, entryTimestamp, windowMinutes, config.pricing.maxStaleMinutes)
+        log.warn('expected move unavailable', { date: entryDate, expiration: choice.expiration, ...details.structured })
+        skip(`expected move unavailable: ${details.summary}`)
+        continue
+      }
     }
 
     if (underlyingAtEntry === undefined) {
@@ -374,24 +422,6 @@ export async function runStudy(
           : 'could not establish the index level at the entry minute'
       )
       continue
-    }
-
-    if (straddle) {
-      // Measured at the same instant as the level, so placement and the move it
-      // is measured against can never disagree.
-      const move = expectedMoveFromStraddle(
-        {
-          underlyingAtEntry,
-          strike: atmStrike,
-          callBars: [],
-          putBars: [],
-          timestamp: filledAt,
-          model: config.pricing.model,
-          missingData
-        },
-        straddle
-      )
-      if (move) expectedMove = move.points
     }
 
     // --- signal ---------------------------------------------------------------
@@ -409,7 +439,9 @@ export async function runStudy(
     // --- placement ------------------------------------------------------------
     const placement = buildPlacement(config, expectedMove)
     if (!placement) {
-      skip('expected move could not be measured, so placement was impossible')
+      const details = describeStraddleData(atmStrike, straddle, entryTimestamp, windowMinutes, config.pricing.maxStaleMinutes)
+      log.warn('expected move unavailable', { date: entryDate, expiration: choice.expiration, ...details.structured })
+      skip(`expected move unavailable: ${details.summary}`)
       continue
     }
 
@@ -467,8 +499,36 @@ export async function runStudy(
     }
 
     if (reconstructed.quality.coverage < config.minimumCoverage) {
+      const sensitivity = coverageSensitivity(
+        definition,
+        { lower, center, upper },
+        underlyingBars,
+        filledAt,
+        pricing,
+        config.pricing.maxStaleMinutes
+      )
+      const q = reconstructed.quality
+      const barCounts = { lower: lower.length, center: center.length, upper: upper.length }
+      log.warn('entry rejected for option data quality', {
+        date: entryDate,
+        expiration: choice.expiration,
+        tickers: {
+          lower: definition.lowerTicker,
+          center: definition.centerTicker,
+          upper: definition.upperTicker
+        },
+        barCounts,
+        quality: q,
+        coverageSensitivity: sensitivity
+      })
       skip(
-        `data quality below threshold: ${(reconstructed.quality.coverage * 100).toFixed(0)}% coverage`
+        `data quality ${(q.coverage * 100).toFixed(1)}% < ${(config.minimumCoverage * 100).toFixed(1)}%; ` +
+          `expiration ${choice.expiration}, strikes ${definition.lowerStrike}/${definition.centerStrike}/${definition.upperStrike}: ` +
+          `${q.pricedMinutes}/${q.expectedMinutes} minutes priced, fresh ${q.freshMinutes}, stale ${q.staleMinutes}, ` +
+          `unpriced ${q.unpricedMinutes}, longest gap ${q.longestStaleRunMinutes}m; ` +
+          `bars L/C/U ${barCounts.lower}/${barCounts.center}/${barCounts.upper}; ` +
+          `missing L/C/U ${q.missingByLeg.lower}/${q.missingByLeg.center}/${q.missingByLeg.upper}; ` +
+          `coverage sensitivity ${sensitivity.map((s) => `${s.maxStaleMinutes}m=${(s.coverage * 100).toFixed(1)}%`).join(', ')}`
       )
       continue
     }
@@ -508,6 +568,60 @@ async function collectUnderlying(
     out.push(...(await source.getUnderlyingMinutes(ticker, date)))
   }
   return out
+}
+
+function describeStraddleData(
+  strike: number,
+  straddle: { call: LegSeries; put: LegSeries } | null,
+  entryTimestamp: number,
+  windowMinutes: number,
+  maxStaleMinutes: number
+): { summary: string; structured: Record<string, unknown> } {
+  const windowEnd = entryTimestamp + windowMinutes * 60_000
+  const describe = (series: LegSeries | undefined): { bars: number; first: string | null; last: string | null } => ({
+    bars: series?.minutes.length ?? 0,
+    first: series?.minutes[0] !== undefined ? toEastern(series.minutes[0]).toFormat('HH:mm') : null,
+    last: series?.minutes.at(-1) !== undefined ? toEastern(series.minutes.at(-1)!).toFormat('HH:mm') : null
+  })
+  const call = describe(straddle?.call)
+  const put = describe(straddle?.put)
+  const start = toEastern(entryTimestamp).toFormat('HH:mm')
+  const end = toEastern(windowEnd).toFormat('HH:mm')
+  return {
+    summary:
+      `strike ${strike}, window ${start}-${end}, carry ${maxStaleMinutes}m; ` +
+      `call bars ${call.bars} (first ${call.first ?? 'none'}, last ${call.last ?? 'none'}), ` +
+      `put bars ${put.bars} (first ${put.first ?? 'none'}, last ${put.last ?? 'none'})`,
+    structured: { strike, windowStart: start, windowEnd: end, maxStaleMinutes, call, put }
+  }
+}
+
+function coverageSensitivity(
+  definition: ButterflyDefinition,
+  legBars: { lower: readonly OptionBar[]; center: readonly OptionBar[]; upper: readonly OptionBar[] },
+  underlyingBars: readonly UnderlyingBar[],
+  entryTimestamp: number,
+  pricing: PricingAssumptions,
+  configuredMaxStale: number
+): { maxStaleMinutes: number; coverage: number }[] {
+  const tolerances = [...new Set([configuredMaxStale, 15, 30, 60])].sort((a, b) => a - b)
+  return tolerances.flatMap((maxStaleMinutes) => {
+    try {
+      const series = reconstructButterfly({
+        definition,
+        legBars,
+        underlyingBars,
+        entryTimestamp,
+        pricing: {
+          ...pricing,
+          missingData: { mode: 'carryForward', maxStaleMinutes }
+        }
+      })
+      return [{ maxStaleMinutes, coverage: series.quality.coverage }]
+    } catch {
+      return []
+    }
+  })
 }
 
 /** Shifts an ISO market date by whole days, without timezone involvement. */

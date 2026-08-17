@@ -19,6 +19,9 @@ import { useAsyncAction, useCacheStats, useNow, useQueueStats } from '../lib/hoo
 export function DataPage() {
   const [keyInput, setKeyInput] = useState('')
   const [secretStatus, setSecretStatus] = useState<SecretStatus | null>(null)
+  const [thetaKeyInput, setThetaKeyInput] = useState('')
+  const [thetaStatus, setThetaStatus] = useState<SecretStatus | null>(null)
+  const [thetaMessage, setThetaMessage] = useState<{ ok: boolean; text: string } | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saveMessage, setSaveMessage] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -28,8 +31,11 @@ export function DataPage() {
   const [confirmClear, setConfirmClear] = useState(false)
 
   const refresh = useCallback(async () => {
-    const [status, current] = await Promise.all([window.api.secrets.status(), window.api.settings.get()])
+    const [status, theta, current] = await Promise.all([
+      window.api.secrets.status(), window.api.theta.status(), window.api.settings.get()
+    ])
     setSecretStatus(status)
+    setThetaStatus(theta)
     setSettings(current)
   }, [])
 
@@ -38,6 +44,7 @@ export function DataPage() {
   }, [refresh])
 
   const [testState, runTest] = useAsyncAction(() => window.api.massive.testConnection())
+  const [thetaTest, runThetaTest] = useAsyncAction(() => window.api.theta.testConnection())
 
   const saveKey = async (): Promise<void> => {
     const result = await window.api.secrets.setApiKey(keyInput)
@@ -57,6 +64,19 @@ export function DataPage() {
     setSettings(next)
   }
 
+  const saveThetaKey = async (): Promise<void> => {
+    const result = await window.api.theta.setApiKey(thetaKeyInput)
+    setThetaMessage({ ok: result.ok, text: result.message })
+    if (result.ok) setThetaKeyInput('')
+    await refresh()
+  }
+
+  const clearThetaKey = async (): Promise<void> => {
+    await window.api.theta.clear()
+    setThetaMessage({ ok: true, text: 'Stored ThetaData API key removed.' })
+    await refresh()
+  }
+
   const envManaged = secretStatus?.source === 'env'
   const unlimited = stats !== null && !Number.isFinite(stats.requestsPerMinute)
 
@@ -74,6 +94,45 @@ export function DataPage() {
       />
 
       <div className="flex-1 space-y-4 overflow-y-auto p-6">
+        <Card
+          title="ThetaData option quotes"
+          subtitle="Primary option-price source. One-minute NBBO bid/ask quotes replace sparse trade aggregates."
+          actions={
+            <Button variant="primary" onClick={() => void runThetaTest()} disabled={thetaTest.loading || !thetaStatus?.present}>
+              {thetaTest.loading && <Spinner />} Test ThetaData
+            </Button>
+          }
+        >
+          <div className="space-y-3">
+            {thetaTest.error && <Notice tone="error">{thetaTest.error}</Notice>}
+            {thetaTest.data && <Notice tone={thetaTest.data.ok ? 'success' : 'error'}>{thetaTest.data.message}</Notice>}
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-ink-dim">Status</span>
+              {thetaStatus?.present ? (
+                <Badge tone="gain">{thetaStatus.source === 'env' ? 'From environment' : 'Stored'} · {thetaStatus.hint}</Badge>
+              ) : <Badge tone="warn">Not configured</Badge>}
+            </div>
+            <Field label="API key" hint="Generated in the ThetaData user portal. It is encrypted with DPAPI and never shown again.">
+              <Input
+                type="password"
+                value={thetaKeyInput}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder={thetaStatus?.present ? '•••••••••••••••• (replace)' : 'Paste your ThetaData API key'}
+                onChange={(e) => setThetaKeyInput(e.target.value)}
+              />
+            </Field>
+            <div className="flex items-center gap-2">
+              <Button variant="primary" onClick={() => void saveThetaKey()} disabled={!thetaKeyInput.trim()}>Save key</Button>
+              <Button variant="danger" onClick={() => void clearThetaKey()} disabled={!thetaStatus?.present || thetaStatus.source === 'env'}>Clear stored key</Button>
+            </div>
+            {thetaMessage && <Notice tone={thetaMessage.ok ? 'success' : 'error'}>{thetaMessage.text}</Notice>}
+            <p className="text-[10px] leading-relaxed text-ink-faint">
+              Run Study gets option roots, strikes, contracts, and missing NBBO quotes from ThetaData automatically. Massive is used only for your cached SPX cash-index history.
+            </p>
+          </div>
+        </Card>
+
         {testState.error && <Notice tone="error">{testState.error}</Notice>}
         {testState.data && (
           <Notice tone={testState.data.ok ? 'success' : 'error'}>
@@ -165,13 +224,13 @@ export function DataPage() {
                   type="number"
                   min={0}
                   max={10000}
-                  value={settings?.massive.requestsPerMinute ?? 5}
+                  value={settings?.massive.requestsPerMinute ?? 0}
                   onChange={(e) => void setRpm(Math.max(0, Number(e.target.value) || 0))}
                 />
               </Field>
 
               <div className="flex flex-wrap gap-1.5">
-                {[5, 100, 0].map((preset) => (
+                {[0, 5, 100].map((preset) => (
                   <Button
                     key={preset}
                     onClick={() => void setRpm(preset)}
@@ -183,9 +242,8 @@ export function DataPage() {
               </div>
 
               <p className="text-[10px] leading-relaxed text-ink-faint">
-                5/min matches free tiers. The $49 Indices Starter endpoints are unlimited, but keep 5/min if the
-                same key also uses free-tier Options endpoints. HTTP 429 responses are retried using the
-                server&apos;s Retry-After header.
+                Unlimited matches the paid Massive Indices plan used by studies. Finite presets remain available
+                for diagnostics. HTTP 429 responses still back off automatically using Retry-After.
               </p>
             </div>
           </Card>

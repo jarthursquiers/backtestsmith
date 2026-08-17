@@ -14,15 +14,15 @@ export const settingsSchema = z.object({
   massive: z
     .object({
       /**
-       * Free "Options Basic" is documented at roughly 5 calls/minute. Kept
-       * configurable so upgrading the plan is a settings change, not a code
-       * change. 0 means unlimited.
+       * Paid Massive Indices has unlimited requests. 0 means unlimited; a
+       * finite value remains available for users deliberately testing a
+       * restricted credential.
        */
-      requestsPerMinute: z.number().int().min(0).max(10_000).default(5),
+      requestsPerMinute: z.number().int().min(0).max(10_000).default(0),
       timeoutMs: z.number().int().min(1000).max(120_000).default(30_000),
       maxRetries: z.number().int().min(0).max(10).default(4)
     })
-    .default({ requestsPerMinute: 5, timeoutMs: 30_000, maxRetries: 4 }),
+    .default({ requestsPerMinute: 0, timeoutMs: 30_000, maxRetries: 4 }),
 
   data: z
     .object({

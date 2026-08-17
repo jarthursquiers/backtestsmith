@@ -42,6 +42,11 @@ export const IPC = {
   secretsSetApiKey: 'secrets:setApiKey',
   secretsClear: 'secrets:clear',
 
+  thetaSecretsStatus: 'theta:secrets:status',
+  thetaSecretsSetApiKey: 'theta:secrets:setApiKey',
+  thetaSecretsClear: 'theta:secrets:clear',
+  thetaTestConnection: 'theta:testConnection',
+
   massiveTestConnection: 'massive:testConnection',
   massiveGetContracts: 'massive:getContracts',
   massiveGetOptionBars: 'massive:getOptionBars',
@@ -127,6 +132,12 @@ export interface AppApi {
     status(): Promise<SecretStatus>
     setApiKey(key: string): Promise<{ ok: boolean; message: string }>
     clear(): Promise<void>
+  }
+  theta: {
+    status(): Promise<SecretStatus>
+    setApiKey(key: string): Promise<{ ok: boolean; message: string }>
+    clear(): Promise<void>
+    testConnection(): Promise<ProviderStatus>
   }
   massive: {
     testConnection(): Promise<ProviderStatus>

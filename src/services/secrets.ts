@@ -33,10 +33,14 @@ export function keyHint(key: string): string | null {
 }
 
 export class SecretStore {
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly envVariable = 'MASSIVE_API_KEY',
+    private readonly label = 'API key'
+  ) {}
 
   private envKey(): string | null {
-    const fromEnv = process.env.MASSIVE_API_KEY?.trim()
+    const fromEnv = process.env[this.envVariable]?.trim()
     return fromEnv && fromEnv.length > 0 ? fromEnv : null
   }
 
@@ -87,7 +91,7 @@ export class SecretStore {
 
     if (!this.encryptionAvailable()) {
       const message =
-        'OS encryption is unavailable, so the key was not saved. Set the MASSIVE_API_KEY environment variable instead.'
+        `OS encryption is unavailable, so the key was not saved. Set the ${this.envVariable} environment variable instead.`
       log.error(message)
       return { ok: false, message }
     }
@@ -95,8 +99,8 @@ export class SecretStore {
     try {
       mkdirSync(dirname(this.filePath), { recursive: true })
       writeFileSync(this.filePath, safeStorage.encryptString(trimmed))
-      log.info('API key saved', { hint: keyHint(trimmed) })
-      return { ok: true, message: 'API key saved securely.' }
+      log.info(`${this.label} saved`, { hint: keyHint(trimmed) })
+      return { ok: true, message: `${this.label} saved securely.` }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       log.error('could not save API key', { error: message })
@@ -107,7 +111,7 @@ export class SecretStore {
   clearApiKey(): void {
     try {
       if (existsSync(this.filePath)) rmSync(this.filePath)
-      log.info('API key cleared')
+      log.info(`${this.label} cleared`)
     } catch (error) {
       log.error('could not clear API key', {
         error: error instanceof Error ? error.message : String(error)

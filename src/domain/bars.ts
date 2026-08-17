@@ -17,6 +17,11 @@ export interface OptionBar {
   volume: number
   vwap?: number
   transactions?: number
+  /** NBBO fields when the source is a quote feed rather than trade aggregates. */
+  bid?: number
+  ask?: number
+  bidSize?: number
+  askSize?: number
 }
 
 /** OHLCV aggregate bar for an underlying instrument or index (e.g. I:SPX). */

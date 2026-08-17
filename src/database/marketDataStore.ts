@@ -27,7 +27,7 @@ export interface BarShape {
 export const MINUTE_BARS: BarShape = { timespan: 'minute', multiplier: 1 }
 export const DAILY_BARS: BarShape = { timespan: 'day', multiplier: 1 }
 
-const BAR_COLUMNS: readonly AppendType[] = [
+const BASE_BAR_COLUMNS: readonly AppendType[] = [
   'varchar', // ticker
   'varchar', // timespan
   'integer', // multiplier
@@ -40,6 +40,14 @@ const BAR_COLUMNS: readonly AppendType[] = [
   'double',  // volume
   'double',  // vwap
   'integer'  // transactions
+]
+
+const OPTION_BAR_COLUMNS: readonly AppendType[] = [
+  ...BASE_BAR_COLUMNS,
+  'double',  // bid
+  'double',  // ask
+  'double',  // bid_size
+  'double'   // ask_size
 ]
 
 /**
@@ -135,12 +143,14 @@ export class MarketDataStore {
   async hasContractCoverage(
     underlying: string,
     expirationDate: MarketDate,
-    type: OptionType | 'any'
+    type: OptionType | 'any',
+    provider?: string
   ): Promise<boolean> {
     const row = await this.db.queryOne<{ n: number }>(
       `SELECT count(*) AS n FROM contract_coverage
-        WHERE underlying = ? AND expiration_date = ? AND contract_type IN (?, 'any')`,
-      [underlying, expirationDate, type]
+        WHERE underlying = ? AND expiration_date = ? AND contract_type IN (?, 'any')
+          ${provider ? 'AND provider = ?' : ''}`,
+      provider ? [underlying, expirationDate, type, provider] : [underlying, expirationDate, type]
     )
     return (row?.n ?? 0) > 0
   }
@@ -194,10 +204,7 @@ export class MarketDataStore {
         )
 
         if (dayBars.length > 0) {
-          await this.db.append(
-            table,
-            BAR_COLUMNS,
-            dayBars.map((b) => [
+          const baseRows = dayBars.map((b) => [
               ticker,
               shape.timespan,
               shape.multiplier,
@@ -211,6 +218,15 @@ export class MarketDataStore {
               b.vwap ?? null,
               b.transactions ?? null
             ])
+          await this.db.append(
+            table,
+            kind === 'option' ? OPTION_BAR_COLUMNS : BASE_BAR_COLUMNS,
+            kind === 'option'
+              ? baseRows.map((row, index) => {
+                  const b = dayBars[index] as OptionBar
+                  return [...row, b.bid ?? null, b.ask ?? null, b.bidSize ?? null, b.askSize ?? null]
+                })
+              : baseRows
           )
         }
 
@@ -382,7 +398,11 @@ function rowToOptionBar(row: Record<string, unknown>): OptionBar {
     close: row.close as number,
     volume: (row.volume as number | null) ?? 0,
     ...(row.vwap != null ? { vwap: row.vwap as number } : {}),
-    ...(row.transactions != null ? { transactions: row.transactions as number } : {})
+    ...(row.transactions != null ? { transactions: row.transactions as number } : {}),
+    ...(row.bid != null ? { bid: row.bid as number } : {}),
+    ...(row.ask != null ? { ask: row.ask as number } : {}),
+    ...(row.bid_size != null ? { bidSize: row.bid_size as number } : {}),
+    ...(row.ask_size != null ? { askSize: row.ask_size as number } : {})
   }
 }
 

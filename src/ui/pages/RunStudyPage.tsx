@@ -300,7 +300,7 @@ export function RunStudyPage() {
 
             <Notice tone="info">
               {fmtInt(selected.length)} methods across up to {fmtInt(sessions)} sessions. Uncached data is
-              fetched at the Massive rate limit, so a first run over a long range can take hours; a re-run over
+              fetched from the configured paid providers, so a cold first run can take time; a re-run over
               the same range is served from the local cache.
             </Notice>
           </div>

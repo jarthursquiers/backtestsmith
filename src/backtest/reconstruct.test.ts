@@ -78,6 +78,12 @@ describe('leg pricing models', () => {
     expect(legPrice(b, 'ohlc4')).toBe((2 + 4 + 1 + 3) / 4)
     expect(legPrice(b, 'hl2')).toBe(2.5)
   })
+
+  it('uses the NBBO midpoint for quote-backed bars', () => {
+    const quote: OptionBar = { ...b, bid: 4.2, ask: 4.6 }
+    expect(legPrice(quote, 'close')).toBe(4.4)
+    expect(legPrice(quote, 'ohlc4')).toBe(4.4)
+  })
 })
 
 describe('latestAtOrBefore', () => {

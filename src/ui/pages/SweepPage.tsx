@@ -202,7 +202,7 @@ export function SweepPage() {
             {estimate.requiresRefetch ? (
               <Notice tone="warn">
                 Entry axes change which contracts are traded, so each of the {fmtInt(estimate.entryCombinations)}{' '}
-                combinations reconstructs from scratch. Uncached data is fetched at the Massive rate limit, so
+                combinations reconstructs from scratch. Uncached data is fetched from the configured providers, so
                 this can run for hours. Cached ranges are reused across combinations.
               </Notice>
             ) : (

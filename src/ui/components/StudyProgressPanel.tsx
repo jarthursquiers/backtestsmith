@@ -45,8 +45,8 @@ export function StudyProgressPanel() {
   }, [])
 
   useEffect(() => {
-    // A study spends most of its time waiting on the rate limiter, so without a
-    // local clock the panel looks frozen even while everything is fine.
+    // Provider requests can be long-running, so keep elapsed time moving even
+    // when no new progress event has arrived.
     const timer = setInterval(() => setTick((t) => t + 1), 1000)
     return () => clearInterval(timer)
   }, [])
@@ -70,7 +70,7 @@ export function StudyProgressPanel() {
           {running && (
             <Badge tone={sinceUpdate > 30_000 ? 'warn' : 'accent'}>
               {sinceUpdate > 30_000
-                ? `no update for ${Math.round(sinceUpdate / 1000)}s`
+                ? `waiting for provider · ${Math.round(sinceUpdate / 1000)}s`
                 : 'running'}
             </Badge>
           )}
@@ -136,6 +136,19 @@ export function StudyProgressPanel() {
           </div>
         )}
 
+        {(progress.recentSkips?.length ?? 0) > 0 && (
+          <div>
+            <div className="mb-1.5 text-[11px] font-medium text-ink-dim">Recent skip details</div>
+            <div className="max-h-36 space-y-1 overflow-y-auto rounded-md border border-line bg-ground p-2 num text-[10px] leading-relaxed text-ink-faint">
+              {progress.recentSkips!.map((item) => (
+                <div key={`${item.date}-${item.reason}`}>
+                  <span className="text-warn">{item.date}</span>: {item.reason}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {everythingSkipped && (
           <Notice tone="warn">
             Every session so far has been skipped, so this run will produce nothing. The reason above is the
@@ -145,8 +158,8 @@ export function StudyProgressPanel() {
 
         {running && (
           <p className="text-[10px] leading-relaxed text-ink-faint">
-            Cached ranges are read locally; missing ranges are downloaded and verified automatically. Long gaps
-            can mean the provider queue is respecting a rate limit. Progress is also written to the terminal, prefixed{' '}
+            Cached ranges are read locally; missing ranges are downloaded and verified automatically. A long gap
+            means an upstream request is still running. Progress is also written to the terminal, prefixed{' '}
             <code className="num">[study]</code>.
           </p>
         )}

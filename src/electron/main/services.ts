@@ -4,6 +4,8 @@ import { app } from 'electron'
 import { CachedProvider } from '../../data/cachedProvider.js'
 import { MassiveClient } from '../../data/massive/client.js'
 import { MassiveProvider } from '../../data/massive/provider.js'
+import { ThetaDataClient } from '../../data/thetadata/client.js'
+import { ThetaHybridProvider } from '../../data/thetadata/provider.js'
 import { RequestQueue } from '../../data/requestQueue.js'
 import { SchwabProvider } from '../../data/schwab/schwabProvider.js'
 import { SchwabStore } from '../../services/schwabStore.js'
@@ -26,12 +28,15 @@ const log = createLogger('app')
 export interface AppServices {
   settings: SettingsStore
   secrets: SecretStore
+  thetaSecrets: SecretStore
   queue: RequestQueue
   client: MassiveClient
   /** Cache-first provider. Everything in the app should use this, not `upstream`. */
   provider: OptionsHistoricalDataProvider
   /** The raw Massive provider, retained for connectivity checks and diagnostics. */
   upstream: MassiveProvider
+  thetaClient: ThetaDataClient
+  thetaUpstream: ThetaHybridProvider
   /** Fallback source for underlying/index history when Massive is unavailable. */
   schwab: SchwabProvider
   schwabStore: SchwabStore
@@ -55,13 +60,25 @@ export async function initServices(): Promise<AppServices> {
   const userData = app.getPath('userData')
   const settings = new SettingsStore(join(userData, 'settings.json'))
   const secrets = new SecretStore(join(userData, 'massive-api-key.bin'))
+  const thetaSecrets = new SecretStore(
+    join(userData, 'thetadata-api-key.bin'),
+    'THETADATA_API_KEY',
+    'ThetaData API key'
+  )
 
-  const current = settings.read()
+  let current = settings.read()
+  // Migrate the old free-tier default. This application now uses paid Massive
+  // only for index data, whose plan is unlimited; leaving 5 here creates a
+  // one-minute stall after every five cache misses.
+  if (current.massive.requestsPerMinute === 5) {
+    current = settings.update({ massive: { requestsPerMinute: 0 } })
+    log.info('removed legacy Massive free-tier throttle')
+  }
   logStore.setMinLevel(current.logLevel)
 
   const queue = new RequestQueue({
     requestsPerMinute: current.massive.requestsPerMinute,
-    maxConcurrent: 1,
+    maxConcurrent: 4,
     maxRetries: current.massive.maxRetries
   })
 
@@ -79,7 +96,14 @@ export async function initServices(): Promise<AppServices> {
   const store = new MarketDataStore(database)
   const studies = new StudyStore(database)
 
-  const provider = new CachedProvider(upstream, store)
+  const thetaClient = new ThetaDataClient(
+    thetaSecrets.getApiKey() ?? '',
+    app.isPackaged
+      ? join(process.resourcesPath, 'thetadata', 'bridge.py')
+      : join(process.cwd(), 'src', 'data', 'thetadata', 'bridge.py')
+  )
+  const thetaUpstream = new ThetaHybridProvider(thetaClient, upstream)
+  const provider = new CachedProvider(thetaUpstream, store)
 
   // Schwab gets its own queue: its rate limits are unrelated to Massive's, and
   // a Massive backlog must not stall an SPX backfill (or vice versa).
@@ -96,10 +120,13 @@ export async function initServices(): Promise<AppServices> {
   services = {
     settings,
     secrets,
+    thetaSecrets,
     queue,
     client,
     provider,
     upstream,
+    thetaClient,
+    thetaUpstream,
     schwab,
     schwabStore,
     schwabQueue,
@@ -121,6 +148,7 @@ export async function initServices(): Promise<AppServices> {
       logStore.setMinLevel(next.logLevel)
       queue.setRequestsPerMinute(next.massive.requestsPerMinute)
       client.setApiKey(secrets.getApiKey() ?? '')
+      thetaClient.setApiKey(thetaSecrets.getApiKey() ?? '')
     }
   }
 
@@ -138,6 +166,7 @@ export async function initServices(): Promise<AppServices> {
 
 export async function disposeServices(): Promise<void> {
   if (!services) return
+  services.thetaClient.close()
   await services.database.close()
   services = null
 }

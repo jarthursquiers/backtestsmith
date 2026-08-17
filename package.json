@@ -6,6 +6,11 @@
   "author": "J. Arthur Squiers",
   "license": "UNLICENSED",
   "private": true,
+  "build": {
+    "extraResources": [
+      { "from": "src/data/thetadata/bridge.py", "to": "thetadata/bridge.py" }
+    ]
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",

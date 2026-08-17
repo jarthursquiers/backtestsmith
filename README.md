@@ -39,6 +39,19 @@ npm run dev
 Then open **Data**, paste a Massive API key, and press **Test connection**.
 Get a key at <https://massive.com/dashboard/keys>.
 
+For quote-quality option pricing, install the official ThetaData client once:
+
+```powershell
+py -3.12 -m pip install -r requirements-thetadata.txt
+```
+
+Then paste the ThetaData Options Value API key into **Data → ThetaData option
+quotes** and press **Test ThetaData**. `Run Study` automatically replaces
+trade-derived option bars with one-minute NBBO bid/ask quotes when a required
+day is not already cached from ThetaData. Option roots, expirations, and strikes
+also come from ThetaData; Massive is retained only for SPX cash-index history. The key is encrypted with the Windows
+keystore and is never written to the database or logs.
+
 For development you can instead set the key in the environment; it takes
 precedence over any stored key:
 

@@ -1,0 +1,3 @@
+thetadata==1.0.10
+# Required by thetadata 1.0.10 at runtime but omitted from its wheel metadata.
+python-dotenv>=1.2.3

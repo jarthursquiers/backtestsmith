@@ -146,6 +146,17 @@ describe('MarketDataStore persistence', () => {
     await db.close()
   })
 
+  it('persists NBBO fields on option quote bars', async () => {
+    const db = new Database(':memory:')
+    await db.open()
+    const store = new MarketDataStore(db)
+    const quote = { ...bar('2025-06-17', 9, 35, 2.2), bid: 2.1, ask: 2.3, bidSize: 7, askSize: 9 }
+    await store.putBars('option', TICKER, ['2025-06-17'], [quote], MINUTE, 'thetadata-nbbo')
+    const [saved] = await store.getOptionBars(TICKER, ['2025-06-17'])
+    expect(saved).toMatchObject({ bid: 2.1, ask: 2.3, bidSize: 7, askSize: 9 })
+    await db.close()
+  })
+
   it('keeps daily and minute bars for the same ticker independent', async () => {
     /*
      * Regression: bars were once keyed without their bar size and replaced by
