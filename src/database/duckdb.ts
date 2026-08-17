@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DuckDBConnection, DuckDBInstance } from '@duckdb/node-api'
@@ -180,8 +181,10 @@ export class Database {
   private connection: DuckDBConnection | null = null
   /** Tail of the serialized operation queue. */
   private queue: Promise<unknown> = Promise.resolve()
-  /** True while a transaction owns the queue, making the lock re-entrant. */
-  private inTransaction = false
+  /** Identifies the transaction currently holding the queue, if any. */
+  private activeTransaction: symbol | null = null
+  /** Carries the transaction token into everything its body awaits. */
+  private readonly transactionScope = new AsyncLocalStorage<symbol>()
 
   constructor(private readonly filePath: string) {}
 
@@ -242,7 +245,17 @@ export class Database {
    * for its whole duration and nothing else can interleave.
    */
   private serialize<T>(work: () => Promise<T>): Promise<T> {
-    if (this.inTransaction) return work()
+    /*
+     * Re-entrancy must be scoped to the running transaction's own body, not to
+     * "a transaction is open somewhere". A boolean flag cannot tell those apart:
+     * an unrelated operation arriving mid-transaction would take the shortcut
+     * and issue a second BEGIN, which is the very error this exists to prevent.
+     * AsyncLocalStorage propagates the token across awaits inside the body, so
+     * only genuinely nested statements bypass the queue.
+     */
+    if (this.activeTransaction !== null && this.transactionScope.getStore() === this.activeTransaction) {
+      return work()
+    }
     // Chain on both settle paths so one failure cannot stall the queue.
     const result = this.queue.then(work, work)
     this.queue = result.then(
@@ -292,18 +305,22 @@ export class Database {
    */
   transaction<T>(work: () => Promise<T>): Promise<T> {
     return this.serialize(async () => {
+      const token = Symbol('transaction')
       const conn = this.conn()
+
+      // BEGIN and COMMIT bypass serialize deliberately: this call already owns
+      // the queue, and routing them back through it would deadlock.
       await conn.run('BEGIN TRANSACTION')
-      this.inTransaction = true
+      this.activeTransaction = token
       try {
-        const result = await work()
+        const result = await this.transactionScope.run(token, work)
         await conn.run('COMMIT')
         return result
       } catch (error) {
         await conn.run('ROLLBACK')
         throw error
       } finally {
-        this.inTransaction = false
+        this.activeTransaction = null
       }
     })
   }

@@ -243,6 +243,78 @@ describe('MarketDataStore persistence', () => {
     await db.close()
   })
 
+  it('queues a transaction that arrives while another is already in flight', async () => {
+    /*
+     * The case a naive "am I in a transaction" flag gets wrong, and the one that
+     * actually happened: rate-limited fetches finish at different times, so the
+     * second write starts while the first transaction is genuinely open. A
+     * global flag makes the newcomer look like a nested statement, it skips the
+     * queue, and DuckDB rejects the second BEGIN.
+     *
+     * Distinguishing them requires knowing whether the caller is running inside
+     * the transaction's own async context, not merely at the same time as it.
+     */
+    const db = new Database(':memory:')
+    await db.open()
+    await db.run('CREATE TABLE t (a INTEGER)')
+
+    const first = db.transaction(async () => {
+      await db.run('INSERT INTO t VALUES (1)')
+      // Hold the transaction open across a real tick.
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      await db.run('INSERT INTO t VALUES (2)')
+    })
+
+    // Let the first transaction actually BEGIN before the second arrives.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const second = db.transaction(async () => {
+      await db.run('INSERT INTO t VALUES (3)')
+    })
+
+    await expect(Promise.all([first, second])).resolves.toBeDefined()
+    expect(await db.query('SELECT count(*) AS n FROM t')).toEqual([{ n: 3 }])
+
+    await db.close()
+  })
+
+  it('still allows statements nested inside a transaction body', async () => {
+    const db = new Database(':memory:')
+    await db.open()
+    await db.run('CREATE TABLE t (a INTEGER)')
+
+    // Nested statements must not deadlock waiting for a queue they already hold.
+    await db.transaction(async () => {
+      await db.run('INSERT INTO t VALUES (1)')
+      const rows = await db.query('SELECT count(*) AS n FROM t')
+      expect(rows).toEqual([{ n: 1 }])
+      await db.run('INSERT INTO t VALUES (2)')
+    })
+
+    expect(await db.query('SELECT count(*) AS n FROM t')).toEqual([{ n: 2 }])
+    await db.close()
+  })
+
+  it('rolls back a failed transaction without stalling the queue', async () => {
+    const db = new Database(':memory:')
+    await db.open()
+    await db.run('CREATE TABLE t (a INTEGER)')
+
+    await expect(
+      db.transaction(async () => {
+        await db.run('INSERT INTO t VALUES (1)')
+        throw new Error('boom')
+      })
+    ).rejects.toThrow('boom')
+
+    // The queue must remain usable after a failure.
+    await db.transaction(async () => {
+      await db.run('INSERT INTO t VALUES (2)')
+    })
+    expect(await db.query('SELECT count(*) AS n FROM t')).toEqual([{ n: 1 }])
+
+    await db.close()
+  })
+
   it('reports stats and clears cleanly', async () => {
     const db = new Database(':memory:')
     await db.open()
