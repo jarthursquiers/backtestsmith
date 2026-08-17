@@ -44,6 +44,17 @@ export interface StudyConfig {
   to: string
   /** Eastern wall-clock entry time, HH:mm. */
   entryTime: string
+  /**
+   * Minutes after `entryTime` in which a fill may occur.
+   *
+   * The index level and the expected move both need option prints, and demanding
+   * them in one exact minute discards sessions whose prints land moments later -
+   * on sparse data, most of them. A trader entering "around 9:35" would have
+   * filled anyway, so the window is honest as well as far more productive. The
+   * minute actually used is recorded as the entry timestamp. Zero restores
+   * single-minute behaviour.
+   */
+  entryWindowMinutes?: number
 
   entry: EntryConfig
   targetDte: number

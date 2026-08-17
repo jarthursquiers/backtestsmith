@@ -52,6 +52,7 @@ export function RunStudyPage() {
   const [from, setFrom] = useState(shiftDate(todayEastern(), -90))
   const [to, setTo] = useState(shiftDate(todayEastern(), -7))
   const [entryTime, setEntryTime] = useState('09:35')
+  const [entryWindow, setEntryWindow] = useState('15')
   const [emaPeriod, setEmaPeriod] = useState('9')
   const [targetDte, setTargetDte] = useState('7')
   const [maxDeviation, setMaxDeviation] = useState('2')
@@ -80,6 +81,7 @@ export function RunStudyPage() {
     from,
     to,
     entryTime,
+    entryWindowMinutes: Number(entryWindow) || 0,
     entry: { type: 'ema', period: Number(emaPeriod) || 9 },
     targetDte: Number(targetDte) || 7,
     expirationRule: 'nearest',
@@ -193,6 +195,17 @@ export function RunStudyPage() {
               </Field>
               <Field label="Entry time (ET)">
                 <Input value={entryTime} onChange={(e) => setEntryTime(e.target.value)} />
+              </Field>
+              <Field
+                label="Entry window"
+                hint="Minutes a fill may trail the entry time when prices are sparse"
+              >
+                <Input
+                  type="number"
+                  min={0}
+                  value={entryWindow}
+                  onChange={(e) => setEntryWindow(e.target.value)}
+                />
               </Field>
               <Field label="EMA period" hint="Direction from price against this daily average">
                 <Input type="number" min={2} value={emaPeriod} onChange={(e) => setEmaPeriod(e.target.value)} />

@@ -354,3 +354,92 @@ describe('skip reason grouping', () => {
     expect(entries[0]![0]).toMatch(/no listed expiration within tolerance of N DTE/)
   })
 })
+
+describe('entry window', () => {
+  /**
+   * Options printing only every 20 minutes. With a 5-minute carry-forward that
+   * leaves most minutes unpriceable, which is what sparse at-the-money data
+   * looks like once the carry tolerance is exhausted.
+   */
+  function sparseSource(everyMinutes = 20) {
+    return makeSource({
+      // No intraday index data, so the level must come from parity.
+      getUnderlyingMinutes: async () => [],
+      async getOptionBars(ticker, from, to) {
+        const out = []
+        const price = ticker.includes('P') ? 12 : 10
+        for (const date of tradingDaysBetween(from, to)) {
+          const open = easternToTimestamp(date, 9, 30)
+          for (let i = 0; i < sessionMinuteCount(date); i += everyMinutes) {
+            const t = open + i * 60_000
+            out.push({ ticker, timestamp: t, open: price, high: price, low: price, close: price, volume: 5 })
+          }
+        }
+        return out
+      }
+    })
+  }
+
+  const sparseConfig = {
+    ...CONFIG,
+    // 09:36 is six minutes past the last print at 09:30, so a 5-minute
+    // carry-forward cannot reach it.
+    entryTime: '09:36',
+    placement: { type: 'fixedDistance' as const, offsetPoints: 100 },
+    pricing: { ...CONFIG.pricing, maxStaleMinutes: 5 }
+  }
+
+  it('recovers sessions the carry-forward tolerance alone cannot reach', async () => {
+    const strict = await runStudy({ ...sparseConfig, entryWindowMinutes: 0 }, sparseSource())
+    expect(strict.series).toHaveLength(0)
+    expect(strict.skipped.some((s) => /could not establish the index level/.test(s.reason))).toBe(true)
+
+    // The window scans forward to the next print at 09:50.
+    const windowed = await runStudy({ ...sparseConfig, entryWindowMinutes: 20 }, sparseSource())
+    expect(windowed.series.length).toBeGreaterThan(0)
+  })
+
+  it('records the minute actually filled, never earlier than requested', async () => {
+    const outcome = await runStudy({ ...sparseConfig, entryWindowMinutes: 20 }, sparseSource())
+    expect(outcome.series.length).toBeGreaterThan(0)
+
+    for (const s of outcome.series) {
+      const date = new Date(s.entryTimestamp)
+      const requested = easternToTimestamp(
+        date.toISOString().slice(0, 10),
+        9,
+        36
+      )
+      // A fill may trail the request but must never precede it, and must fall
+      // inside the declared window.
+      expect(s.entryTimestamp).toBeGreaterThanOrEqual(requested)
+      expect(s.entryTimestamp - requested).toBeLessThanOrEqual(20 * 60_000)
+    }
+  })
+
+  it('carry-forward alone suffices when gaps are inside its tolerance', async () => {
+    // Prints every 5 minutes: 09:35 is reachable from 09:36 by carrying one
+    // minute, so no window is required.
+    const outcome = await runStudy({ ...sparseConfig, entryWindowMinutes: 0 }, sparseSource(5))
+    expect(outcome.series.length).toBeGreaterThan(0)
+  })
+
+  it('does not let the window run past its bound', async () => {
+    const late = makeSource({
+      getUnderlyingMinutes: async () => [],
+      async getOptionBars(ticker, from) {
+        const price = ticker.includes('P') ? 12 : 10
+        return [{
+          ticker, timestamp: easternToTimestamp(from, 9, 30),
+          open: price, high: price, low: price, close: price, volume: 1
+        }]
+      }
+    })
+    const outcome = await runStudy(
+      { ...sparseConfig, entryWindowMinutes: 2, pricing: { ...CONFIG.pricing, maxStaleMinutes: 1 } },
+      late
+    )
+    expect(outcome.series).toHaveLength(0)
+    expect(outcome.skipped.some((s) => /within 2 minutes/.test(s.reason))).toBe(true)
+  })
+})

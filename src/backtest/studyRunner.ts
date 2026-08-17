@@ -20,7 +20,7 @@ import { buildButterfly } from './buildButterfly.js'
 import { emaDirectionStrategy, fixedDirectionStrategy, type EntryStrategy } from './entryStrategy.js'
 import { candidateExpirationDates, selectExpiration } from './expirationSelection.js'
 import { expectedMoveFromStraddle } from './expectedMove.js'
-import { buildLegSeries, resolveLegQuote } from './legPricing.js'
+import { buildLegSeries, resolveLegQuote, type LegSeries } from './legPricing.js'
 import {
   expectedMovePlacement,
   fixedDistancePlacement,
@@ -291,59 +291,96 @@ export async function runStudy(
 
     let underlyingAtEntry: number | undefined
     let expectedMove: number | null = null
+    /** Minute the entry is actually attributed to, which may trail the request. */
+    let filledAt = entryTimestamp
 
     const cachedMinutes = await source.getUnderlyingMinutes(indexTicker, entryDate)
-    const exact = cachedMinutes.find((b) => Math.floor(b.timestamp / 60_000) * 60_000 === entryTimestamp)
-    if (exact) underlyingAtEntry = exact.close
+    const cachedByMinute = new Map(
+      cachedMinutes.map((b) => [Math.floor(b.timestamp / 60_000) * 60_000, b.close])
+    )
 
-    const needsStraddle = config.placement.type === 'expectedMove' || underlyingAtEntry === undefined
+    /*
+     * One straddle fetch serves two purposes: expected-move placement, and
+     * deriving the index level itself when no intraday index data exists.
+     */
+    const needsStraddle = config.placement.type === 'expectedMove' || cachedByMinute.size === 0
+    let straddle: { call: LegSeries; put: LegSeries } | null = null
+
     if (needsStraddle && atmCall && atmPut) {
+      report(index, entryDate, 'fetching at-the-money straddle')
       const [callBars, putBars] = await Promise.all([
         source.getOptionBars(atmCall.ticker, entryDate, entryDate),
         source.getOptionBars(atmPut.ticker, entryDate, entryDate)
       ])
-      const legs = {
+      straddle = {
         call: buildLegSeries('lower', atmCall.ticker, callBars),
         put: buildLegSeries('upper', atmPut.ticker, putBars)
       }
+    }
 
-      const move = expectedMoveFromStraddle(
-        {
-          underlyingAtEntry: previous.close,
-          strike: atmStrike,
-          callBars,
-          putBars,
-          timestamp: entryTimestamp,
-          model: config.pricing.model,
-          missingData
-        },
-        legs
-      )
-      if (move) expectedMove = move.points
+    /*
+     * Scan forward from the entry time for the first minute where the level can
+     * be established. Demanding one exact minute discards every session whose
+     * prints land moments later, which on sparse data is most of them - and a
+     * trader entering "around 9:35" would have filled anyway. The minute used
+     * becomes the recorded entry, so nothing is misattributed.
+     */
+    const windowMinutes = Math.max(0, config.entryWindowMinutes ?? 15)
+    for (let offset = 0; offset <= windowMinutes; offset++) {
+      const minute = entryTimestamp + offset * 60_000
 
-      if (underlyingAtEntry === undefined) {
-        // Fall back to a parity-derived level, which is measurably accurate
-        // enough for placement even though it is not for touch detection.
-        const call = resolveLegQuote(legs.call.ticker, entryTimestamp, legs.call.index, legs.call.minutes, config.pricing.model, missingData)
-        const put = resolveLegQuote(legs.put.ticker, entryTimestamp, legs.put.index, legs.put.minutes, config.pricing.model, missingData)
+      const cached = cachedByMinute.get(minute)
+      if (cached !== undefined) {
+        underlyingAtEntry = cached
+        filledAt = minute
+      } else if (straddle) {
+        const call = resolveLegQuote(straddle.call.ticker, minute, straddle.call.index, straddle.call.minutes, config.pricing.model, missingData)
+        const put = resolveLegQuote(straddle.put.ticker, minute, straddle.put.index, straddle.put.minutes, config.pricing.model, missingData)
         if (call && put) {
           const estimate = estimateFromParity(
             [{ strike: atmStrike, callPrice: call.price, putPrice: put.price, callAgeMs: call.ageMs, putAgeMs: put.ageMs }],
-            { yearsToExpiry: yearsBetween(entryTimestamp, easternToTimestamp(choice.expiration, 16, 0)) }
+            { yearsToExpiry: yearsBetween(minute, easternToTimestamp(choice.expiration, 16, 0)) }
           )
-          if (estimate) underlyingAtEntry = estimate.spot
+          if (estimate) {
+            underlyingAtEntry = estimate.spot
+            filledAt = minute
+          }
         }
       }
+
+      if (underlyingAtEntry !== undefined) break
     }
 
     if (underlyingAtEntry === undefined) {
-      skip('could not establish the index level at the entry minute')
+      skip(
+        windowMinutes > 0
+          ? `could not establish the index level within ${windowMinutes} minutes of the entry time`
+          : 'could not establish the index level at the entry minute'
+      )
       continue
+    }
+
+    if (straddle) {
+      // Measured at the same instant as the level, so placement and the move it
+      // is measured against can never disagree.
+      const move = expectedMoveFromStraddle(
+        {
+          underlyingAtEntry,
+          strike: atmStrike,
+          callBars: [],
+          putBars: [],
+          timestamp: filledAt,
+          model: config.pricing.model,
+          missingData
+        },
+        straddle
+      )
+      if (move) expectedMove = move.points
     }
 
     // --- signal ---------------------------------------------------------------
     const signal = entryStrategy.getSignal({
-      entryTimestamp,
+      entryTimestamp: filledAt,
       entryDate,
       dailyBars,
       underlyingAtEntry
@@ -405,7 +442,7 @@ export async function runStudy(
         definition,
         legBars: { lower, center, upper },
         underlyingBars,
-        entryTimestamp,
+        entryTimestamp: filledAt,
         pricing
       })
     } catch (error) {
