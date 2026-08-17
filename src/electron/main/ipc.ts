@@ -14,6 +14,15 @@ import { availableRoots, buildButterfly } from '../../backtest/buildButterfly.js
 import { reconstructButterfly } from '../../backtest/reconstruct.js'
 import { computeExcursions } from '../../backtest/excursions.js'
 import { simulateAll } from '../../backtest/simulate.js'
+import { buildLegSeries, resolveLegQuote, type LegSeries } from '../../backtest/legPricing.js'
+import { estimateFromParity, yearsBetween, type ParityQuote } from '../../backtest/putCallParity.js'
+import {
+  buildParityReport,
+  indexUnderlyingByMinute,
+  type ParitySample
+} from '../../backtest/parityValidation.js'
+import type { ParityValidationRequest, ParityValidationResponse } from '../../shared/parity.js'
+import { sessionMinuteGrid } from '../../backtest/reconstruct.js'
 import {
   centerTouch,
   holdToExpiration,
@@ -96,6 +105,147 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   handle(IPC.massiveGetContracts, (query: ContractQuery) => services.provider.getContracts(query))
   handle(IPC.massiveGetOptionBars, (query: BarQuery) => services.provider.getOptionBars(query))
   handle(IPC.massiveGetUnderlyingBars, (query: BarQuery) => services.provider.getUnderlyingBars(query))
+
+  // --- put-call parity validation -------------------------------------------
+  handle(IPC.parityValidate, async (request: ParityValidationRequest): Promise<ParityValidationResponse> => {
+    const requestsBefore = services.queue.getStats().completed
+    const sessions = tradingDaysBetween(request.from, request.to)
+    const skipped: { date: string; reason: string }[] = []
+    const sessionsUsed: string[] = []
+    const samples: ParitySample[] = []
+    const strikesRequested = new Set<number>()
+    const minuteShape = { timespan: 'minute', multiplier: 1 }
+
+    const [calls, puts] = await Promise.all([
+      services.provider.getContracts({
+        underlying: request.underlying, expirationDate: request.expiration, type: 'call', expired: true
+      }),
+      services.provider.getContracts({
+        underlying: request.underlying, expirationDate: request.expiration, type: 'put', expired: true
+      })
+    ])
+
+    const rootMatches = (root?: string): boolean =>
+      !request.preferredRoot || (root ?? '').toUpperCase() === request.preferredRoot.toUpperCase()
+
+    const callByStrike = new Map(calls.filter((c) => rootMatches(c.root)).map((c) => [c.strike, c]))
+    const putByStrike = new Map(puts.filter((c) => rootMatches(c.root)).map((c) => [c.strike, c]))
+    const availableStrikes = [...callByStrike.keys()]
+      .filter((k) => putByStrike.has(k))
+      .sort((a, b) => a - b)
+
+    if (availableStrikes.length === 0) {
+      throw new Error('No strike has both a call and a put for this expiration and root.')
+    }
+
+    const expiryClose = sessionClose(request.expiration)
+    const policy = { mode: 'carryForward' as const, maxStaleMinutes: request.maxStaleMinutes }
+
+    for (const date of sessions) {
+      // Ground truth. Without it this session can prove nothing.
+      const actualBars = await services.store.getUnderlyingBars('I:SPX', [date], minuteShape)
+      if (actualBars.length === 0) {
+        skipped.push({ date, reason: 'no real index minute data cached' })
+        continue
+      }
+
+      /*
+       * Strikes are chosen from where the index actually was. Using ground truth
+       * for that is legitimate here: the question is how accurate parity is at
+       * the money, not how a strike would be picked live.
+       */
+      const midpoint = actualBars[Math.floor(actualBars.length / 2)]!.close
+      const nearest = availableStrikes.reduce((best, k) =>
+        Math.abs(k - midpoint) < Math.abs(best - midpoint) ? k : best
+      )
+      const centerIndex = availableStrikes.indexOf(nearest)
+      const chosen = availableStrikes.slice(
+        Math.max(0, centerIndex - request.strikesPerSide),
+        centerIndex + request.strikesPerSide + 1
+      )
+      for (const k of chosen) strikesRequested.add(k)
+
+      const legs: { strike: number; call: LegSeries; put: LegSeries }[] = []
+      for (const strike of chosen) {
+        const callContract = callByStrike.get(strike)!
+        const putContract = putByStrike.get(strike)!
+        const [callBars, putBars] = await Promise.all([
+          services.provider.getOptionBars({
+            ticker: callContract.ticker, from: date, to: date, timespan: 'minute'
+          }),
+          services.provider.getOptionBars({
+            ticker: putContract.ticker, from: date, to: date, timespan: 'minute'
+          })
+        ])
+        legs.push({
+          strike,
+          call: buildLegSeries('lower', callContract.ticker, callBars.bars),
+          put: buildLegSeries('upper', putContract.ticker, putBars.bars)
+        })
+      }
+
+      const actualByMinute = indexUnderlyingByMinute(actualBars)
+      const timestamps = actualBars.map((b) => b.timestamp)
+      let sessionSamples = 0
+
+      for (const minute of sessionMinuteGrid(Math.min(...timestamps), Math.max(...timestamps))) {
+        const actual = actualByMinute.get(minute)
+        if (actual === undefined) continue
+
+        const quotes: ParityQuote[] = []
+        for (const leg of legs) {
+          const call = resolveLegQuote(leg.call.ticker, minute, leg.call.index, leg.call.minutes, 'close', policy)
+          const put = resolveLegQuote(leg.put.ticker, minute, leg.put.index, leg.put.minutes, 'close', policy)
+          if (!call || !put) continue
+          quotes.push({
+            strike: leg.strike,
+            callPrice: call.price,
+            putPrice: put.price,
+            callAgeMs: call.ageMs,
+            putAgeMs: put.ageMs
+          })
+        }
+        if (quotes.length === 0) continue
+
+        const yearsToExpiry = yearsBetween(minute, expiryClose)
+        const estimate = estimateFromParity(quotes, { yearsToExpiry })
+        if (!estimate) continue
+
+        samples.push({ timestamp: minute, estimate, actual, yearsToExpiry })
+        sessionSamples++
+      }
+
+      if (sessionSamples === 0) {
+        skipped.push({ date, reason: 'no minute had both a call and a put priced' })
+      } else {
+        sessionsUsed.push(date)
+      }
+    }
+
+    // The denominator is the real index minutes available, since those bound
+    // what could possibly have been compared.
+    let expectedMinutes = 0
+    for (const date of sessionsUsed) {
+      expectedMinutes += (await services.store.getUnderlyingBars('I:SPX', [date], minuteShape)).length
+    }
+
+    const report = buildParityReport(samples, expectedMinutes)
+    log.info('parity validation complete', {
+      sessions: sessionsUsed.length,
+      samples: samples.length,
+      rawRms: report.raw.rms,
+      calibratedRms: report.calibrated?.rms,
+      fittedCarry: report.fittedCarryRate
+    })
+
+    return {
+      report,
+      sessionsUsed,
+      skipped,
+      strikesRequested: [...strikesRequested].sort((a, b) => a - b),
+      apiRequests: services.queue.getStats().completed - requestsBefore
+    }
+  })
 
   // --- butterfly reconstruction ---------------------------------------------
   handle(IPC.butterflyChain, async (

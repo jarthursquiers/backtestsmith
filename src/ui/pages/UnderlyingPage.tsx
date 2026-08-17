@@ -18,6 +18,7 @@ import {
 import { BarSeriesChart } from '../charts/BarSeriesChart.js'
 import { SchwabConnect } from '../components/SchwabConnect.js'
 import { MassiveIndexDownload } from '../components/MassiveIndexDownload.js'
+import { ParityValidation } from '../components/ParityValidation.js'
 import { fmtBytes, fmtEasternDateTime, fmtEasternTime, fmtInt, fmtPrice, shiftDate, todayEastern } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
 
@@ -106,6 +107,8 @@ export function UnderlyingPage() {
         <MassiveIndexDownload onDataChanged={() => void refreshCoverage()} />
 
         <SchwabConnect onDataChanged={() => void refreshCoverage()} />
+
+        <ParityValidation />
 
         <Card
           title="Cached underlying data"

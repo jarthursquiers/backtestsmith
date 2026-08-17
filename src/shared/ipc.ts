@@ -4,6 +4,7 @@ import type { BarFetchResult, ProviderStatus } from './provider.js'
 import type { CacheStats } from './cache.js'
 import type { SchwabBackfillRequest, SchwabBackfillResult, SchwabConnectionStatus } from './schwab.js'
 import type { ChainSummary, ReconstructRequest, ReconstructResponse } from './butterfly.js'
+import type { ParityValidationRequest, ParityValidationResponse } from './parity.js'
 import type {
   CsvImportOptions,
   CsvImportResult,
@@ -36,6 +37,8 @@ export const IPC = {
   massiveGetContracts: 'massive:getContracts',
   massiveGetOptionBars: 'massive:getOptionBars',
   massiveGetUnderlyingBars: 'massive:getUnderlyingBars',
+
+  parityValidate: 'parity:validate',
 
   butterflyChain: 'butterfly:chain',
   butterflyReconstruct: 'butterfly:reconstruct',
@@ -107,6 +110,10 @@ export interface AppApi {
     getContracts(query: ContractQuery): Promise<OptionContract[]>
     getOptionBars(query: BarQuery): Promise<BarFetchResult<OptionBar>>
     getUnderlyingBars(query: BarQuery): Promise<BarFetchResult<UnderlyingBar>>
+  }
+  parity: {
+    /** Measures derived-index accuracy against real index data. */
+    validate(request: ParityValidationRequest): Promise<ParityValidationResponse>
   }
   butterfly: {
     /** Loads the option chain for an expiration, so strikes can be chosen. */

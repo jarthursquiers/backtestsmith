@@ -208,6 +208,36 @@ Every trade therefore carries coverage (minutes priced), freshness (minutes wher
 all three legs actually traded), the longest consecutive gap, and per-leg absent
 counts, so results can be filtered on quality rather than trusted blindly.
 
+## Derived SPX from put-call parity
+
+When index data is unavailable, the index level can be derived from option
+prices already owned. For European options, with D the discount factor and F the
+forward:
+
+```
+C - P = D * (F - K)
+```
+
+This is an identity, not a model. Two things follow that are easy to get wrong:
+
+- **It yields the forward, not spot.** Converting needs a carry rate:
+  `S = F * e^(-(r-q)T)`. At 7 DTE with r-q near 3% the forward sits about 3.5
+  points above spot on a 6000 index, decaying to zero at expiration - so
+  ignoring it adds a *drift* that imitates market movement rather than a
+  harmless constant offset. With three or more strikes, regressing `C - P` on
+  `K` recovers both D and F with no rate assumption at all.
+- **Stale legs dominate the error.** At the money the call and put deltas are
+  about +0.5 and -0.5, so `d(C-P)/dS` is about 1.0: every point the index moves
+  between the two legs' prints becomes a point of error, one for one.
+
+Rather than argue about whether that is good enough, the app measures it. The
+SPX Underlying screen compares parity-derived levels against real cached index
+minutes and reports bias, RMS, and percentile errors **bucketed by leg
+staleness**, plus a carry rate fitted from the data. A large raw bias that
+collapses after calibration is a fixable rate assumption; what remains is the
+irreducible noise that decides whether parity can support center-touch rules or
+only strike placement.
+
 ## Management rules
 
 Exit strategies are a composable rule engine rather than a fixed list, because

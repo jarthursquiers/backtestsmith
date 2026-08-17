@@ -43,6 +43,9 @@ const api: AppApi = {
     getOptionBars: (query) => invoke(IPC.massiveGetOptionBars, query),
     getUnderlyingBars: (query) => invoke(IPC.massiveGetUnderlyingBars, query)
   },
+  parity: {
+    validate: (request) => invoke(IPC.parityValidate, request)
+  },
   butterfly: {
     chain: (underlying, expiration, optionType) =>
       invoke(IPC.butterflyChain, underlying, expiration, optionType),
