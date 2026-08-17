@@ -22,7 +22,7 @@ Built in verifiable phases. **Phases 1 and 2 are complete.**
 | 4 | SPX underlying history via CSV import (`I:SPX` not entitled) | Mechanism done, data not yet loaded |
 | 5 | Single butterfly reconstruction, minute by minute | Done |
 | 6 | Single-trade management rules | Done |
-| 7 | Automated entry generation (9 EMA, 7 DTE, placement) | Planned |
+| 7 | Automated entry generation (9 EMA, 7 DTE, placement) | Engine done; batch runner is Phase 8 |
 | 8 | Batch backtester and summary statistics | Planned |
 | 9 | Management comparison and equity curves | Planned |
 | 10 | MFE / MAE / conditional path analytics | Planned |
@@ -237,6 +237,45 @@ staleness**, plus a carry rate fitted from the data. A large raw bias that
 collapses after calibration is a fixable rate assumption; what remains is the
 irreducible noise that decides whether parity can support center-touch rules or
 only strike placement.
+
+## Entry generation
+
+Entry signal, expiration selection, and placement are separate modules, so one
+entry population can be held fixed while management varies - and so a placement
+method can be swapped without touching the signal.
+
+### Look-ahead prevention
+
+The rule that governs everything here: **a daily candle does not exist until its
+session closes.** A trade entered at 9:35 on Tuesday cannot use Tuesday's daily
+bar, which is six and a half hours from being written.
+
+Indicators therefore take the date being traded and discard any bar dated on or
+after it, unconditionally. Passing full history is safe by construction rather
+than by discipline, and the property is asserted directly: the EMA for a date
+must not change when later bars are appended, including absurd ones. The entry
+price itself *is* observable at 9:35, so comparing live price against an average
+computed through last night's close is what a trader could actually have acted
+on.
+
+### Expiration selection
+
+Target DTE with `nearest`, `preferGte`, or `preferLte`, an optional maximum
+deviation, and ties broken toward the longer-dated contract. Expirations on or
+before the entry date are never selected. Calendar and trading DTE are both
+reported and never conflated.
+
+### Placement
+
+Fixed distance, distance in wing widths, and near-wing-outside-the-expected-move.
+All resolve to strikes the chain actually lists: if a wing is unlisted the
+placement **fails rather than substituting a nearby strike**, since a silently
+narrowed wing changes the risk, the maximum value, and every normalized distance
+derived from it.
+
+Expected-move placement requires the move to be supplied from measured data. It
+is deliberately not estimated internally, because deriving it needs an
+at-the-money straddle price at the entry minute.
 
 ## Management rules
 
