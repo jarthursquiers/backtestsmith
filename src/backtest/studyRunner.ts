@@ -157,6 +157,9 @@ function buildEntryStrategy(config: StudyConfig): EntryStrategy {
     ...(config.entry.invert !== undefined ? { invert: config.entry.invert } : {}),
     ...(config.entry.minimumDistance !== undefined
       ? { minimumDistance: config.entry.minimumDistance }
+      : {}),
+    ...(config.entry.meanReversionOverride !== undefined
+      ? { meanReversionOverride: config.entry.meanReversionOverride }
       : {})
   })
 }

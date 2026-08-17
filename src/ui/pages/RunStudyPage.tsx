@@ -52,6 +52,7 @@ export function RunStudyPage() {
   const [entryTime, setEntryTime] = useState('09:35')
   const [entryWindow, setEntryWindow] = useState('15')
   const [emaPeriod, setEmaPeriod] = useState('9')
+  const [meanReversionOverride, setMeanReversionOverride] = useState(false)
   const [targetDte, setTargetDte] = useState('7')
   const [maxDeviation, setMaxDeviation] = useState('2')
   const [wingWidth, setWingWidth] = useState('25')
@@ -80,7 +81,11 @@ export function RunStudyPage() {
     to,
     entryTime,
     entryWindowMinutes: Number(entryWindow) || 0,
-    entry: { type: 'ema', period: Number(emaPeriod) || 9 },
+    entry: {
+      type: 'ema',
+      period: Number(emaPeriod) || 9,
+      meanReversionOverride
+    },
     targetDte: Number(targetDte) || 7,
     expirationRule: 'nearest',
     maxDeviation: Number(maxDeviation) || 2,
@@ -165,6 +170,19 @@ export function RunStudyPage() {
               </Field>
               <Field label="EMA period" hint="Direction from price against this daily average">
                 <Input type="number" min={2} value={emaPeriod} onChange={(e) => setEmaPeriod(e.target.value)} />
+              </Field>
+              <Field
+                label="Two-candle mean reversion"
+                hint="Uses the previous close vs EMA, then reverses after two candles wholly above/below when the latest candle turns back toward the EMA"
+              >
+                <div className="flex h-[30px] items-center gap-2 rounded-md border border-line bg-surface-2 px-2.5 text-[11px] text-ink-dim">
+                  <input
+                    type="checkbox"
+                    checked={meanReversionOverride}
+                    onChange={(event) => setMeanReversionOverride(event.target.checked)}
+                  />
+                  Enable reversal override
+                </div>
               </Field>
               <Field label="Target DTE" hint="Calendar days">
                 <Input type="number" min={1} value={targetDte} onChange={(e) => setTargetDte(e.target.value)} />

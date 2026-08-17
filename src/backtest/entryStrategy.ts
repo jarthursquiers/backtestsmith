@@ -1,7 +1,7 @@
 import type { UnderlyingBar } from '../domain/bars.js'
 import type { OptionType } from '../domain/contracts.js'
-import type { MarketDate } from '../core/time/marketTime.js'
-import { emaAsOf } from './indicators.js'
+import { marketDateOf, type MarketDate } from '../core/time/marketTime.js'
+import { emaAsOf, emaSeries } from './indicators.js'
 
 /**
  * Entry signals.
@@ -58,6 +58,12 @@ export interface EmaDirectionOptions {
    * entries when price is sitting on the average.
    */
   minimumDistance?: number
+  /**
+   * Base direction on the previous completed close versus its EMA, then reverse
+   * when the last two candles are wholly on one side and the latest candle's
+   * colour points back toward the average.
+   */
+  meanReversionOverride?: boolean
 }
 
 /**
@@ -69,15 +75,72 @@ export interface EmaDirectionOptions {
  * night", which is what a trader could actually act on.
  */
 export function emaDirectionStrategy(options: EmaDirectionOptions): EntryStrategy {
-  const { period, invert = false, minimumDistance = 0 } = options
+  const { period, invert = false, minimumDistance = 0, meanReversionOverride = false } = options
 
   return {
-    id: `ema${period}${invert ? '-inv' : ''}${minimumDistance ? `-min${minimumDistance}` : ''}`,
-    label: `${period} EMA direction${invert ? ' (inverted)' : ''}`,
+    id: `ema${period}${meanReversionOverride ? '-mr2' : ''}${invert ? '-inv' : ''}${minimumDistance ? `-min${minimumDistance}` : ''}`,
+    label: `${period} EMA direction${meanReversionOverride ? ' + two-candle mean reversion' : ''}${invert ? ' (inverted)' : ''}`,
 
     getSignal(context: EntryContext): EntrySignal | null {
       const { underlyingAtEntry } = context
       if (underlyingAtEntry === undefined) return null
+
+      if (meanReversionOverride) {
+        const completed = context.dailyBars
+          .filter((bar) => marketDateOf(bar.timestamp) < context.entryDate)
+          .sort((a, b) => a.timestamp - b.timestamp)
+        if (completed.length < 2) return null
+
+        const points = emaSeries(completed, period)
+        const emaByDate = new Map(points.map((point) => [point.marketDate, point.value]))
+        const latest = completed.at(-1)!
+        const prior = completed.at(-2)!
+        const latestDate = marketDateOf(latest.timestamp)
+        const priorDate = marketDateOf(prior.timestamp)
+        const latestEma = emaByDate.get(latestDate)
+        const priorEma = emaByDate.get(priorDate)
+        if (latestEma === undefined || priorEma === undefined) return null
+
+        const distance = latest.close - latestEma
+        if (Math.abs(distance) < minimumDistance) return null
+
+        const bothAbove = prior.open > priorEma && prior.close > priorEma &&
+          latest.open > latestEma && latest.close > latestEma
+        const bothBelow = prior.open < priorEma && prior.close < priorEma &&
+          latest.open < latestEma && latest.close < latestEma
+        const latestRed = latest.close < latest.open
+        const latestGreen = latest.close > latest.open
+        const bearishOverride = bothAbove && latestRed
+        const bullishOverride = bothBelow && latestGreen
+
+        let bearish = distance < 0
+        if (bearishOverride) bearish = true
+        if (bullishOverride) bearish = false
+        if (invert) bearish = !bearish
+
+        const override = bearishOverride
+          ? 'two candles wholly above the EMA and the latest candle is red: bearish mean-reversion override'
+          : bullishOverride
+            ? 'two candles wholly below the EMA and the latest candle is green: bullish mean-reversion override'
+            : `previous close is ${distance < 0 ? 'below' : 'above'} its EMA`
+
+        return {
+          direction: bearish ? 'bearish' : 'bullish',
+          optionType: bearish ? 'put' : 'call',
+          underlyingAtEntry,
+          reason: `${period} EMA previous-close rule: ${override}`,
+          indicators: {
+            ema: latestEma,
+            distanceFromEma: distance,
+            previousOpen: latest.open,
+            previousClose: latest.close,
+            priorOpen: prior.open,
+            priorClose: prior.close,
+            priorEma,
+            meanReversionOverride: bearishOverride || bullishOverride ? 1 : 0
+          }
+        }
+      }
 
       const ema = emaAsOf(context.dailyBars, context.entryDate, period)
       if (ema === null) return null

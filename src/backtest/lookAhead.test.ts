@@ -13,12 +13,16 @@ import {
 
 /** Daily bar anchored at the session close of its date. */
 function daily(date: string, close: number): UnderlyingBar {
+  return candle(date, close, close)
+}
+
+function candle(date: string, open: number, close: number): UnderlyingBar {
   return {
     ticker: 'I:SPX',
     timestamp: easternToTimestamp(date, 16, 0),
-    open: close,
-    high: close,
-    low: close,
+    open,
+    high: Math.max(open, close),
+    low: Math.min(open, close),
     close
   }
 }
@@ -172,6 +176,66 @@ describe('EMA direction strategy', () => {
     )!
     expect(polluted.direction).toBe(baseline.direction)
     expect(polluted.indicators.ema).toBeCloseTo(baseline.indicators.ema!, 10)
+  })
+
+  it('applies the bearish two-candle mean-reversion override above the EMA', () => {
+    const bars = [
+      daily('2025-06-02', 100), daily('2025-06-03', 100), daily('2025-06-04', 100),
+      candle('2025-06-05', 120, 120),
+      candle('2025-06-06', 125, 115)
+    ]
+    const meanReversion = emaDirectionStrategy({ period: 3, meanReversionOverride: true })
+    const signal = meanReversion.getSignal({
+      entryTimestamp: easternToTimestamp('2025-06-09', 9, 35),
+      entryDate: '2025-06-09',
+      dailyBars: bars,
+      underlyingAtEntry: 500
+    })!
+
+    expect(signal.direction).toBe('bearish')
+    expect(signal.optionType).toBe('put')
+    expect(signal.indicators.meanReversionOverride).toBe(1)
+    expect(signal.reason).toMatch(/wholly above.*red.*bearish/)
+  })
+
+  it('applies the bullish mirror override below the EMA', () => {
+    const bars = [
+      daily('2025-06-02', 100), daily('2025-06-03', 100), daily('2025-06-04', 100),
+      candle('2025-06-05', 80, 80),
+      candle('2025-06-06', 75, 85)
+    ]
+    const meanReversion = emaDirectionStrategy({ period: 3, meanReversionOverride: true })
+    const signal = meanReversion.getSignal({
+      entryTimestamp: easternToTimestamp('2025-06-09', 9, 35),
+      entryDate: '2025-06-09',
+      dailyBars: bars,
+      underlyingAtEntry: 1
+    })!
+
+    expect(signal.direction).toBe('bullish')
+    expect(signal.optionType).toBe('call')
+    expect(signal.indicators.meanReversionOverride).toBe(1)
+    expect(signal.reason).toMatch(/wholly below.*green.*bullish/)
+  })
+
+  it('uses the previous close rather than the entry-minute level when enabled', () => {
+    const bars = [
+      daily('2025-06-02', 100), daily('2025-06-03', 100), daily('2025-06-04', 100),
+      candle('2025-06-05', 110, 115),
+      candle('2025-06-06', 115, 120)
+    ]
+    const meanReversion = emaDirectionStrategy({ period: 3, meanReversionOverride: true })
+    const signal = meanReversion.getSignal({
+      entryTimestamp: easternToTimestamp('2025-06-09', 9, 35),
+      entryDate: '2025-06-09',
+      dailyBars: bars,
+      // Deliberately below the EMA; the checked rule uses Friday's close.
+      underlyingAtEntry: 1
+    })!
+
+    expect(signal.direction).toBe('bullish')
+    expect(signal.indicators.meanReversionOverride).toBe(0)
+    expect(signal.reason).toMatch(/previous close is above/)
   })
 
   it('offers a fixed-direction control', () => {

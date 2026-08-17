@@ -13,7 +13,14 @@ export type ExpirationRule =
 
 /** Entry signal configuration. */
 export type EntryConfig =
-  | { type: 'ema'; period: number; invert?: boolean; minimumDistance?: number }
+  | {
+      type: 'ema'
+      period: number
+      invert?: boolean
+      minimumDistance?: number
+      /** Previous-close EMA direction with a symmetric two-candle reversal override. */
+      meanReversionOverride?: boolean
+    }
   | { type: 'fixed'; direction: 'bullish' | 'bearish' }
 
 /** Where the butterfly is centred. */
