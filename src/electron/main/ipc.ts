@@ -13,6 +13,18 @@ import { easternToTimestamp, marketDateOf, parseTimeOfDay, sessionClose } from '
 import { availableRoots, buildButterfly } from '../../backtest/buildButterfly.js'
 import { reconstructButterfly } from '../../backtest/reconstruct.js'
 import { computeExcursions } from '../../backtest/excursions.js'
+import { simulateAll } from '../../backtest/simulate.js'
+import {
+  centerTouch,
+  holdToExpiration,
+  profitTarget,
+  stopLoss,
+  targetWithStop,
+  tentEntry,
+  timeExit,
+  trailingProfit,
+  type ExitStrategy
+} from '../../backtest/exits.js'
 import type { MissingDataPolicy } from '../../domain/butterfly.js'
 import { parseUnderlyingCsv } from '../../data/csv/csvImport.js'
 import { tradingDaysBetween } from '../../core/time/marketTime.js'
@@ -180,9 +192,31 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       coverage: series.quality.coverage
     })
 
+    /*
+     * Every management method runs against this one reconstructed series, so
+     * they cannot diverge on entry price, timing, or data quality. That shared
+     * basis is what makes the comparison meaningful rather than decorative.
+     */
+    const strategies: ExitStrategy[] = [
+      holdToExpiration(),
+      profitTarget(25),
+      profitTarget(50),
+      profitTarget(100),
+      profitTarget(200),
+      stopLoss(50),
+      targetWithStop(100, 50),
+      targetWithStop(200, 50),
+      trailingProfit({ triggerPct: 100, givebackFractionOfPeak: 0.3 }),
+      centerTouch(),
+      tentEntry(0.5),
+      timeExit({ atDte: 2 }),
+      timeExit({ atDte: 1 })
+    ]
+
     return {
       series,
       excursions: computeExcursions(series.observations),
+      managements: simulateAll(series, strategies),
       legBarCounts: { lower: lower.bars.length, center: center.bars.length, upper: upper.bars.length },
       hasUnderlying: underlyingBars.length > 0
     }

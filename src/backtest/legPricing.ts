@@ -42,6 +42,26 @@ export function butterflyValue(lower: number, center: number, upper: number): nu
   return lower - 2 * center + upper
 }
 
+/**
+ * Bounds on a butterfly's value within one minute, given the legs' bars.
+ *
+ * The maximum is reached with both wings at their highs and the short body at
+ * its low; the minimum with the opposite. Those instants almost certainly did
+ * not coincide, so the interval is wider than the butterfly's true range. It is
+ * therefore only sound for the question "could this threshold have been touched
+ * at all", which is exactly how the exit engine uses it.
+ */
+export function butterflyValueBounds(
+  lower: OptionBar,
+  center: OptionBar,
+  upper: OptionBar
+): { low: number; high: number } {
+  return {
+    high: lower.high - 2 * center.low + upper.high,
+    low: lower.low - 2 * center.high + upper.low
+  }
+}
+
 /** Indexes bars by their exact minute timestamp for O(1) lookup. */
 export function indexBarsByMinute(bars: readonly OptionBar[]): Map<number, OptionBar> {
   const index = new Map<number, OptionBar>()
@@ -128,6 +148,8 @@ export interface AlignedMinute {
   lower: LegQuote | null
   center: LegQuote | null
   upper: LegQuote | null
+  /** Source bars for the resolved quotes, for intra-minute bound computation. */
+  bars: { lower: OptionBar | null; center: OptionBar | null; upper: OptionBar | null }
   /** True when all three legs resolved to a price. */
   priced: boolean
   /** True when priced but at least one leg was carried forward. */
@@ -155,6 +177,11 @@ export function alignLegs(
       lower,
       center,
       upper,
+      bars: {
+        lower: lower ? (legs.lower.index.get(lower.observedAt) ?? null) : null,
+        center: center ? (legs.center.index.get(center.observedAt) ?? null) : null,
+        upper: upper ? (legs.upper.index.get(upper.observedAt) ?? null) : null
+      },
       priced,
       stale: priced && maxAgeMs > 0,
       maxAgeMs: priced ? maxAgeMs : 0

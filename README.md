@@ -21,7 +21,7 @@ Built in verifiable phases. **Phases 1 and 2 are complete.**
 | 3 | Local cache (DuckDB) so backtests never re-call Massive | Done |
 | 4 | SPX underlying history via CSV import (`I:SPX` not entitled) | Mechanism done, data not yet loaded |
 | 5 | Single butterfly reconstruction, minute by minute | Done |
-| 6 | Single-trade management rules | Planned |
+| 6 | Single-trade management rules | Done |
 | 7 | Automated entry generation (9 EMA, 7 DTE, placement) | Planned |
 | 8 | Batch backtester and summary statistics | Planned |
 | 9 | Management comparison and equity curves | Planned |
@@ -207,6 +207,42 @@ produces no observation and is counted against the trade's data quality instead.
 Every trade therefore carries coverage (minutes priced), freshness (minutes where
 all three legs actually traded), the longest consecutive gap, and per-leg absent
 counts, so results can be filtered on quality rather than trusted blindly.
+
+## Management rules
+
+Exit strategies are a composable rule engine rather than a fixed list, because
+the research question is *which management method wins*, and that comparison is
+only valid if every rule is evaluated identically against the same entries.
+
+Available: hold to expiration, fixed profit target, fixed stop, target+stop,
+time exit (calendar or trading DTE), center-strike touch, tent entry at a
+normalized distance, and trailing profit. Trailing supports both give-back as a
+*fraction of peak profit* and give-back in *percentage points from the peak* -
+these are genuinely different rules, not two spellings of one.
+
+Rules compose with `combine`, and many rules run against a single reconstructed
+series via `simulateAll`, which is the guarantee that no management method ever
+sees a different entry population.
+
+### Execution semantics
+
+Minute bars cannot reveal the order of events inside a minute, and the engine
+never pretends otherwise:
+
+- **Fills are at the threshold, not the overshoot.** A path that leaps from 2.20
+  to 5.00 through a 4.00 target fills at 4.00. Filling at the mark would credit
+  the strategy with a gap it never had to earn.
+- **A trigger reachable intra-minute but unconfirmed by the mark is reported as
+  `ambiguous`.** Reachability is judged against bounds derived from the legs'
+  bars. Those bounds are deliberately wider than the butterfly's true range -
+  the three legs hit their own extremes at different instants, so no combination
+  of leg OHLC recovers the real path - which makes them sound for "could this
+  have been touched" and unsound for anything else.
+- **When opposing rules are both reachable in the same minute, the adverse one
+  is taken** and the result is flagged ambiguous. The engine never silently
+  chooses the favorable outcome.
+- **Excursions are measured over the held portion only**, so a rule is never
+  credited or penalised for a path it exited before.
 
 ## SPX underlying data
 

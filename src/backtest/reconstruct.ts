@@ -10,7 +10,13 @@ import type {
 import { CONTRACT_MULTIPLIER, DEFAULT_PRICING } from '../domain/butterfly.js'
 import { dteAt } from '../core/time/dte.js'
 import { marketDateOf, sessionClose, sessionOpen, tradingDaysBetween } from '../core/time/marketTime.js'
-import { alignLegs, buildLegSeries, butterflyValue, type AlignedMinute } from './legPricing.js'
+import {
+  alignLegs,
+  buildLegSeries,
+  butterflyValue,
+  butterflyValueBounds,
+  type AlignedMinute
+} from './legPricing.js'
 
 /**
  * Reconstructs a butterfly's minute-by-minute value from its three legs.
@@ -158,6 +164,14 @@ export function reconstructButterfly(input: ReconstructInput): ButterflySeries {
       minutesSinceEntry: Math.round((point.minute - entryAligned.minute) / 60_000),
       stale: point.stale,
       maxLegAgeMs: point.maxAgeMs
+    }
+
+    // Bounds enable the exit engine to detect that a threshold *could* have been
+    // touched inside a minute even when the mark did not cross it.
+    if (point.bars.lower && point.bars.center && point.bars.upper) {
+      const bounds = butterflyValueBounds(point.bars.lower, point.bars.center, point.bars.upper)
+      observation.valueUpperBound = bounds.high
+      observation.valueLowerBound = bounds.low
     }
 
     if (underlyingPrice !== undefined) {

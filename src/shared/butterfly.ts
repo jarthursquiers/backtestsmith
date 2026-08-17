@@ -1,6 +1,7 @@
 import type { ButterflySeries, LegPricingModel } from '../domain/butterfly.js'
 import type { OptionContract, OptionType } from '../domain/contracts.js'
 import type { Excursions } from './excursions.js'
+import type { TradeResult } from './trade.js'
 
 /** Request to reconstruct one butterfly, as issued from the Trade Inspector. */
 export interface ReconstructRequest {
@@ -27,6 +28,11 @@ export interface ReconstructRequest {
 export interface ReconstructResponse {
   series: ButterflySeries
   excursions: Excursions
+  /**
+   * The same reconstructed path run through every management method, so the
+   * comparison is guaranteed to share one entry and one price series.
+   */
+  managements: TradeResult[]
   /** Bars actually retrieved per leg, for diagnosing a thin reconstruction. */
   legBarCounts: { lower: number; center: number; upper: number }
   /** True when SPX levels were available for the whole window. */

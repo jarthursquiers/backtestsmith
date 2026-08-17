@@ -71,6 +71,17 @@ export interface ButterflyObservation {
   minutesSinceEntry: number
   distanceToCenter?: number
   normalizedDistanceToCenter?: number
+  /**
+   * Widest butterfly value consistent with the legs' bars in this minute.
+   *
+   * NOT the butterfly's actual high: the three legs reach their own extremes at
+   * different instants, so no combination of leg OHLC recovers the true path.
+   * This is a genuine upper bound and is used only to decide whether a
+   * threshold *could* have been touched, never to price a fill.
+   */
+  valueUpperBound?: number
+  /** Narrowest butterfly value consistent with the legs' bars. See above. */
+  valueLowerBound?: number
   /** True when any leg price was carried forward rather than observed. */
   stale: boolean
   /** Largest carry-forward age across the three legs, in milliseconds. */

@@ -26,6 +26,7 @@ import {
   todayEastern
 } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
+import { ManagementTable } from '../components/ManagementTable.js'
 
 /**
  * Phase 5: reconstruct one butterfly minute by minute and look at it honestly.
@@ -384,6 +385,8 @@ export function TradeInspectorPage() {
                 ))}
               </div>
             </Card>
+
+            <ManagementTable results={result.managements} />
 
             <Card
               title="Path"
