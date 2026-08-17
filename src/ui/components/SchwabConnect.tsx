@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { SchwabBackfillResult, SchwabConnectionStatus } from '../../shared/schwab.js'
 import { Badge, Button, Card, Field, Input, Notice, Select, Spinner, StatTile } from './primitives.js'
+import { tradingDaysBetween } from '../../core/time/marketTime.js'
 import { fmtInt, shiftDate, todayEastern } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
 
@@ -107,6 +108,27 @@ export function SchwabConnect({ onDataChanged }: { onDataChanged: () => void }) 
     onDataChanged()
     return result
   })
+
+  /*
+   * Expected sessions come from the trading calendar, not the calendar dates.
+   * Comparing a requested start of, say, a Saturday against the first returned
+   * bar on the following Monday looks like missing history but is not.
+   */
+  const expectedSessions = useMemo(() => {
+    try {
+      return tradingDaysBetween(from, to).length
+    } catch {
+      return null
+    }
+  }, [from, to])
+
+  const firstExpectedSession = useMemo(() => {
+    try {
+      return tradingDaysBetween(from, to)[0] ?? null
+    } catch {
+      return null
+    }
+  }, [from, to])
 
   const daysUntilReauth =
     status?.refreshTokenExpiresAt != null
@@ -320,7 +342,18 @@ export function SchwabConnect({ onDataChanged }: { onDataChanged: () => void }) 
                     value={fmtInt(lastBackfill.barsWritten)}
                     tone={lastBackfill.barsWritten > 0 ? 'gain' : 'loss'}
                   />
-                  <StatTile label="Sessions" value={fmtInt(lastBackfill.sessionsWritten)} />
+                  <StatTile
+                    label="Sessions"
+                    value={fmtInt(lastBackfill.sessionsWritten)}
+                    hint={expectedSessions !== null ? `of ${fmtInt(expectedSessions)} expected` : undefined}
+                    tone={
+                      expectedSessions === null || lastBackfill.sessionsWritten === 0
+                        ? 'neutral'
+                        : lastBackfill.sessionsWritten >= expectedSessions
+                          ? 'gain'
+                          : 'warn'
+                    }
+                  />
                   <StatTile
                     label="Returned range"
                     value={lastBackfill.dateRange?.from ?? '—'}
@@ -337,12 +370,29 @@ export function SchwabConnect({ onDataChanged }: { onDataChanged: () => void }) 
                   </Notice>
                 )}
 
-                {lastBackfill.dateRange && lastBackfill.dateRange.from > from && (
-                  <Notice tone="warn">
-                    Requested from {from}, but the earliest data returned was {lastBackfill.dateRange.from}. That
-                    is where Schwab&apos;s history for this bar size appears to start.
-                  </Notice>
-                )}
+                {/*
+                  Only a start later than the first *trading day* in the range
+                  indicates missing history. A requested start on a weekend or
+                  holiday is not a shortfall.
+                */}
+                {lastBackfill.dateRange &&
+                  firstExpectedSession !== null &&
+                  lastBackfill.dateRange.from > firstExpectedSession && (
+                    <Notice tone="warn">
+                      The first trading day in this range is {firstExpectedSession}, but the earliest data
+                      returned was {lastBackfill.dateRange.from}. That is where Schwab&apos;s history for this
+                      bar size appears to start.
+                    </Notice>
+                  )}
+
+                {lastBackfill.barsWritten > 0 &&
+                  expectedSessions !== null &&
+                  lastBackfill.sessionsWritten >= expectedSessions && (
+                    <Notice tone="success">
+                      Complete: {fmtInt(lastBackfill.sessionsWritten)} sessions returned, matching every trading
+                      day the calendar expects in this range.
+                    </Notice>
+                  )}
               </>
             )}
           </div>
