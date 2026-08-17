@@ -27,7 +27,7 @@ import { preflightStudy, runStudy, type StudyDataSource } from '../../backtest/s
 import { prepareStudyData } from '../../backtest/studyPreparation.js'
 import { computeMetrics } from '../../backtest/metrics.js'
 import { buildAnalyticsReport } from '../../backtest/conditionalPaths.js'
-import { seriesToCsv, studyToJson, tradesToCsv } from '../../backtest/exports.js'
+import { seriesToCsv, studyJsonFilename, studyToJson, tradesToCsv } from '../../backtest/exports.js'
 import { estimateSweepCost, expandSweep } from '../../backtest/parameterSweep.js'
 import type { SweepAxis, SweepResult } from '../../shared/sweep.js'
 import type { StudyMetrics } from '../../shared/metrics.js'
@@ -477,7 +477,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     })
     return saveTextFile(
       getWindow(),
-      `study-${runId}.json`,
+      studyJsonFilename(runId, run.createdAt),
       [{ name: 'JSON', extensions: ['json'] }],
       studyToJson(run)
     )

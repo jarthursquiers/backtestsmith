@@ -329,4 +329,45 @@ describe('missing data handling', () => {
       })
     ).toThrow(ReconstructionError)
   })
+
+  it('rejects an entry whose synthetic price exceeds the wing width', () => {
+    const legs = legsForValues(entry, [52])
+    expect(() => reconstructButterfly({
+      definition: DEF,
+      legBars: legs,
+      entryTimestamp: entry,
+      entryDeadlineTimestamp: entry,
+      requireFreshEntry: true,
+      exitTimestamp: entry
+    })).toThrow(/invalid butterfly entry: synthetic value 52\.00 exceeds.*lower O:SPXW/)
+  })
+
+  it('removes impossible later marks and counts them as unpriced', () => {
+    const series = reconstructButterfly({
+      definition: DEF,
+      legBars: legsForValues(entry, [2, 52, 3]),
+      entryTimestamp: entry,
+      entryDeadlineTimestamp: entry,
+      requireFreshEntry: true,
+      exitTimestamp: entry + 2 * 60_000
+    })
+
+    expect(series.observations.map((o) => o.butterflyValue)).toEqual([2, 3])
+    expect(series.quality.invalidPriceMinutes).toBe(1)
+    expect(series.quality.unpricedMinutes).toBe(1)
+    expect(series.invalidPriceSamples?.[0]?.reason).toMatch(/exceeds the 25\.00-point wing width/)
+  })
+
+  it('will not drift past the entry deadline waiting for a fresh leg', () => {
+    const legs = legsForValues(entry, [2, 3])
+    const delayed = { ...legs, lower: legs.lower.slice(1) }
+    expect(() => reconstructButterfly({
+      definition: DEF,
+      legBars: delayed,
+      entryTimestamp: entry,
+      entryDeadlineTimestamp: entry,
+      requireFreshEntry: true,
+      exitTimestamp: entry + 60_000
+    })).toThrow(/fresh same-minute prices inside the entry window/)
+  })
 })

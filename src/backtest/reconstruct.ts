@@ -2,8 +2,10 @@ import type { OptionBar, UnderlyingBar } from '../domain/bars.js'
 import type {
   ButterflyDefinition,
   ButterflyObservation,
+  ButterflyPriceAudit,
   ButterflySeries,
   DataQuality,
+  InvalidButterflyPrice,
   LegRole,
   PricingAssumptions
 } from '../domain/butterfly.js'
@@ -45,6 +47,10 @@ export interface ReconstructInput {
   underlyingBars?: readonly UnderlyingBar[]
   /** Simulated entry instant, epoch ms. */
   entryTimestamp: number
+  /** Entry may not drift beyond this instant while waiting for all three legs. */
+  entryDeadlineTimestamp?: number
+  /** Require all three entry legs to be observed in the accepted minute. */
+  requireFreshEntry?: boolean
   /**
    * Last instant to track, epoch ms. Defaults to the expiration session close.
    */
@@ -57,6 +63,41 @@ export class ReconstructionError extends Error {
     super(message)
     this.name = 'ReconstructionError'
   }
+}
+
+/** Small allowance for floating-point and option tick rounding, never dollars of latitude. */
+export const BUTTERFLY_PRICE_TOLERANCE = 0.01
+
+function priceAudit(point: AlignedMinute, value: number): ButterflyPriceAudit {
+  return {
+    timestamp: point.minute,
+    value,
+    lower: point.lower!,
+    center: point.center!,
+    upper: point.upper!,
+    stale: point.stale,
+    maxLegAgeMs: point.maxAgeMs
+  }
+}
+
+function invalidPriceReason(value: number, wingWidth: number): string | null {
+  if (!Number.isFinite(value)) return 'synthetic value is not finite'
+  if (value < -BUTTERFLY_PRICE_TOLERANCE) {
+    return `synthetic value ${value.toFixed(2)} is below zero`
+  }
+  if (value > wingWidth + BUTTERFLY_PRICE_TOLERANCE) {
+    return `synthetic value ${value.toFixed(2)} exceeds the ${wingWidth.toFixed(2)}-point wing width`
+  }
+  return null
+}
+
+function describeAudit(audit: ButterflyPriceAudit): string {
+  const leg = (role: 'lower' | 'center' | 'upper'): string => {
+    const quote = audit[role]
+    return `${role} ${quote.ticker}=${quote.price.toFixed(2)}@${new Date(quote.observedAt).toISOString()}` +
+      (quote.ageMs > 0 ? ` age ${Math.round(quote.ageMs / 60_000)}m` : '')
+  }
+  return `${leg('lower')}, ${leg('center')}, ${leg('upper')}; value=${audit.value.toFixed(2)}`
 }
 
 /** One grid minute, with the market date it belongs to already resolved. */
@@ -142,12 +183,43 @@ export function reconstructButterfly(input: ReconstructInput): ButterflySeries {
     })
   }
 
-  // The entry debit comes from the first minute that can be priced at or after
-  // entry. Nothing later than that is used to establish it.
-  const entryIndex = aligned.findIndex((a) => a.priced)
+  // An entry is accepted only inside the declared fill window, from three
+  // same-minute prints, and at a price consistent with a defined-risk fly.
+  const entryDeadline = input.entryDeadlineTimestamp ?? exitTimestamp
+  const requireFreshEntry = input.requireFreshEntry ?? false
+  const invalidPriceSamples: InvalidButterflyPrice[] = []
+  let entryIndex = -1
+  for (let i = 0; i < aligned.length; i++) {
+    const point = aligned[i]!
+    if (point.minute > entryDeadline) break
+    if (!point.priced || (requireFreshEntry && point.stale)) continue
+    const value = butterflyValue(point.lower!.price, point.center!.price, point.upper!.price)
+    const audit = priceAudit(point, value)
+    const violation = invalidPriceReason(value, definition.wingWidth)
+    const debit = value + pricing.slippage
+    const debitViolation = debit <= 0
+      ? `entry debit ${debit.toFixed(2)} is not positive after slippage`
+      : debit > definition.wingWidth + BUTTERFLY_PRICE_TOLERANCE
+        ? `entry debit ${debit.toFixed(2)} exceeds the ${definition.wingWidth.toFixed(2)}-point wing width after slippage`
+        : null
+    if (violation || debitViolation) {
+      if (invalidPriceSamples.length < 5) {
+        invalidPriceSamples.push({ ...audit, reason: violation ?? debitViolation! })
+      }
+      continue
+    }
+    entryIndex = i
+    break
+  }
   if (entryIndex === -1) {
+    const invalid = invalidPriceSamples[0]
     throw new ReconstructionError(
-      'The butterfly could not be priced at any minute: at least one leg never traded within the missing-data tolerance.'
+      invalid
+        ? `invalid butterfly entry: ${invalid.reason}; ${describeAudit(invalid)}`
+        : `The butterfly could not be priced at any minute by ${new Date(entryDeadline).toISOString()}: ` +
+          (requireFreshEntry
+            ? 'all three legs require fresh same-minute prices inside the entry window.'
+            : 'at least one leg had no acceptable price inside the entry window.')
     )
   }
 
@@ -161,12 +233,6 @@ export function reconstructButterfly(input: ReconstructInput): ButterflySeries {
   // Slippage works against the trader: pay more on entry, receive less on exit.
   const entryDebit = rawEntryValue + pricing.slippage
 
-  if (entryDebit <= 0) {
-    warnings.push(
-      `The entry debit computed to ${entryDebit.toFixed(2)}, which is not a valid long butterfly price. ` +
-        'This usually means one leg had a stale or crossed print in that minute.'
-    )
-  }
   if (entryAligned.minute > entryTimestamp) {
     const lateMinutes = Math.round((entryAligned.minute - entryTimestamp) / 60_000)
     warnings.push(`No priceable minute at entry; the first fill was ${lateMinutes} minute(s) later.`)
@@ -180,11 +246,19 @@ export function reconstructButterfly(input: ReconstructInput): ButterflySeries {
   const entryUnderlying = underlyingIndex.get(entryAligned.minute)?.close
 
   const observations: ButterflyObservation[] = []
+  const invalidMinutes = new Set<number>()
   for (let i = entryIndex; i < aligned.length; i++) {
     const point = aligned[i]!
     if (!point.priced) continue
 
     const value = butterflyValue(point.lower!.price, point.center!.price, point.upper!.price)
+    const audit = priceAudit(point, value)
+    const violation = invalidPriceReason(value, definition.wingWidth)
+    if (violation) {
+      invalidMinutes.add(point.minute)
+      if (invalidPriceSamples.length < 5) invalidPriceSamples.push({ ...audit, reason: violation })
+      continue
+    }
     // Exit slippage is applied when a trade is closed, not to every mark; the
     // mark is the honest mid-path value under the chosen model.
     const pnlDollars = (value - entryDebit) * CONTRACT_MULTIPLIER * definition.quantity
@@ -202,15 +276,18 @@ export function reconstructButterfly(input: ReconstructInput): ButterflySeries {
       tradingDte: dte.tradingDte,
       minutesSinceEntry: Math.round((point.minute - entryAligned.minute) / 60_000),
       stale: point.stale,
-      maxLegAgeMs: point.maxAgeMs
+      maxLegAgeMs: point.maxAgeMs,
+      priceAudit: audit
     }
 
     // Bounds enable the exit engine to detect that a threshold *could* have been
     // touched inside a minute even when the mark did not cross it.
     if (point.bars.lower && point.bars.center && point.bars.upper) {
       const bounds = butterflyValueBounds(point.bars.lower, point.bars.center, point.bars.upper)
-      observation.valueUpperBound = bounds.high
-      observation.valueLowerBound = bounds.low
+      // Independent leg OHLC extremes are very wide, but static arbitrage
+      // bounds still apply to the package at every instant.
+      observation.valueUpperBound = Math.min(definition.wingWidth, bounds.high)
+      observation.valueLowerBound = Math.max(0, bounds.low)
     }
 
     if (underlyingPrice !== undefined) {
@@ -228,7 +305,14 @@ export function reconstructButterfly(input: ReconstructInput): ButterflySeries {
     observations.push(observation)
   }
 
-  const quality = summarizeQuality(aligned.slice(entryIndex))
+  const quality = summarizeQuality(aligned.slice(entryIndex), invalidMinutes)
+
+  if (invalidMinutes.size > 0) {
+    warnings.push(
+      `${invalidMinutes.size} fully populated minute(s) were rejected because the synthetic butterfly value ` +
+        `fell outside 0..${definition.wingWidth}. They count as unpriced minutes.`
+    )
+  }
 
   if (quality.coverage < 0.5) {
     warnings.push(
@@ -246,10 +330,12 @@ export function reconstructButterfly(input: ReconstructInput): ButterflySeries {
     definition,
     entryDebit,
     entryTimestamp: entryAligned.minute,
+    entryAudit: priceAudit(entryAligned, rawEntryValue),
     ...(entryUnderlying !== undefined ? { entryUnderlying } : {}),
     observations,
     quality,
     pricing,
+    invalidPriceSamples,
     warnings
   }
 }
@@ -263,11 +349,15 @@ function indexUnderlying(bars: readonly UnderlyingBar[]): Map<number, Underlying
 }
 
 /** Computes per-trade data quality from the aligned minutes. */
-export function summarizeQuality(aligned: readonly AlignedMinute[]): DataQuality {
+export function summarizeQuality(
+  aligned: readonly AlignedMinute[],
+  invalidMinutes: ReadonlySet<number> = new Set()
+): DataQuality {
   const expectedMinutes = aligned.length
   let pricedMinutes = 0
   let freshMinutes = 0
   let staleMinutes = 0
+  let invalidPriceMinutes = 0
   let longestStaleRunMinutes = 0
   let currentRun = 0
   const missingByLeg: Record<LegRole, number> = { lower: 0, center: 0, upper: 0 }
@@ -277,7 +367,10 @@ export function summarizeQuality(aligned: readonly AlignedMinute[]): DataQuality
     if (point.center === null) missingByLeg.center++
     if (point.upper === null) missingByLeg.upper++
 
-    if (!point.priced) {
+    if (invalidMinutes.has(point.minute)) {
+      invalidPriceMinutes++
+      currentRun++
+    } else if (!point.priced) {
       currentRun++
     } else if (point.stale) {
       pricedMinutes++
@@ -297,6 +390,7 @@ export function summarizeQuality(aligned: readonly AlignedMinute[]): DataQuality
     freshMinutes,
     staleMinutes,
     unpricedMinutes: expectedMinutes - pricedMinutes,
+    invalidPriceMinutes,
     longestStaleRunMinutes,
     missingByLeg,
     coverage: expectedMinutes > 0 ? pricedMinutes / expectedMinutes : 0,

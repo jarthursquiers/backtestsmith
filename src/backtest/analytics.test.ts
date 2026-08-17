@@ -15,7 +15,7 @@ import {
   expandSweep,
   parseValueList
 } from './parameterSweep.js'
-import { seriesToCsv, studyToJson, toCsv, tradesToCsv } from './exports.js'
+import { seriesToCsv, studyJsonFilename, studyToJson, toCsv, tradesToCsv } from './exports.js'
 
 const DEF: ButterflyDefinition = {
   underlying: 'SPX', direction: 'bearish', optionType: 'put', expiration: '2025-06-20',
@@ -323,6 +323,12 @@ describe('parameter sweep', () => {
 // --- exports ----------------------------------------------------------------
 
 describe('exports', () => {
+  it('timestamps study JSON filenames in sortable UTC form', () => {
+    expect(studyJsonFilename('abc123', Date.parse('2026-08-17T21:11:28.645Z'))).toBe(
+      'study-20260817-211128Z-abc123.json'
+    )
+  })
+
   it('escapes CSV cells that would break the format', () => {
     expect(toCsv([['plain', 'has,comma', 'has"quote', 'has\nnewline']])).toBe(
       'plain,"has,comma","has""quote","has\nnewline"'
@@ -339,17 +345,20 @@ describe('exports', () => {
   })
 
   it('includes caveats in the JSON export', () => {
+    const exportedTrade = trade({ finalPct: 50, reached: [25, 50] })
     const json = JSON.parse(
       studyToJson({
         runId: 'r1', createdAt: Date.now(), config: BASE,
         entryCount: 10, entriesAttempted: 20, skipped: [],
-        summaries: [], trades: [], sizing: 'oneContract', appVersion: '0.1.0'
+        summaries: [], trades: [exportedTrade], sizing: 'oneContract', appVersion: '0.1.0'
       })
     )
     // A result shipped without its assumptions cannot be checked by anyone else.
     expect(json.config).toBeDefined()
     expect(json.caveats.join(' ')).toMatch(/not historical NBBO quotes/)
     expect(json.caveats.join(' ')).toMatch(/may not be distinguishable from chance/)
+    expect(json.trades).toHaveLength(1)
+    expect(json.trades[0].entryDebit).toBe(exportedTrade.entryDebit)
   })
 
   it('exports a minute lifecycle', () => {

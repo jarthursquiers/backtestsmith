@@ -83,14 +83,17 @@ export function valueForPnlPct(entryDebit: number, pct: number): number {
 function reachableButUnconfirmed(
   observation: ButterflyObservation,
   threshold: number,
-  direction: 'above' | 'below'
+  direction: 'above' | 'below',
+  wingWidth: number
 ): boolean {
   if (direction === 'above') {
     if (observation.butterflyValue >= threshold) return false
-    return observation.valueUpperBound !== undefined && observation.valueUpperBound >= threshold
+    return observation.valueUpperBound !== undefined &&
+      Math.min(observation.valueUpperBound, wingWidth) >= threshold
   }
   if (observation.butterflyValue <= threshold) return false
-  return observation.valueLowerBound !== undefined && observation.valueLowerBound <= threshold
+  return observation.valueLowerBound !== undefined &&
+    Math.max(observation.valueLowerBound, 0) <= threshold
 }
 
 // --- individual strategies ---------------------------------------------------
@@ -115,6 +118,13 @@ export function profitTarget(targetPct: number): ExitStrategy {
     evaluate: ({ observation, position, isLast }) => {
       const threshold = valueForPnlPct(position.entryDebit, targetPct)
 
+      // A target above the package's theoretical maximum can never execute.
+      if (threshold > position.definition.wingWidth) {
+        return isLast
+          ? { reason: 'expiration', exitValue: observation.butterflyValue, ambiguous: false }
+          : null
+      }
+
       if (observation.pnlPct >= targetPct) {
         return {
           reason: 'profitTarget',
@@ -125,7 +135,7 @@ export function profitTarget(targetPct: number): ExitStrategy {
         }
       }
 
-      if (reachableButUnconfirmed(observation, threshold, 'above')) {
+      if (reachableButUnconfirmed(observation, threshold, 'above', position.definition.wingWidth)) {
         return {
           reason: 'profitTarget',
           exitValue: threshold,
@@ -158,7 +168,7 @@ export function stopLoss(stopPct: number): ExitStrategy {
         }
       }
 
-      if (reachableButUnconfirmed(observation, threshold, 'below')) {
+      if (reachableButUnconfirmed(observation, threshold, 'below', position.definition.wingWidth)) {
         return {
           reason: 'stopLoss',
           exitValue: Math.max(threshold, 0),
@@ -182,7 +192,9 @@ export function timeExit(options: { atDte: number; useTradingDte?: boolean }): E
     label: `Exit at ${atDte} ${useTradingDte ? 'trading ' : ''}DTE`,
     evaluate: ({ observation, isLast }) => {
       const dte = useTradingDte ? observation.tradingDte : observation.dte
-      if (dte <= atDte) {
+      // A scheduled exit is meant to model an executable action, so never base
+      // it on a carried-forward leg. Continue to the first fresh valid mark.
+      if (dte <= atDte && !observation.stale) {
         return { reason: 'timeExit', exitValue: observation.butterflyValue, ambiguous: false }
       }
       return isLast

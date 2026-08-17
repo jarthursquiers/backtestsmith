@@ -47,7 +47,7 @@ export function TradeInspectorPage() {
   const [quantity, setQuantity] = useState('1')
 
   const [pricingModel, setPricingModel] = useState<'close' | 'ohlc4' | 'hl2'>('close')
-  const [slippage, setSlippage] = useState('0')
+  const [slippage, setSlippage] = useState('0.05')
   const [missingDataMode, setMissingDataMode] = useState<'strict' | 'carryForward'>('carryForward')
   const [maxStaleMinutes, setMaxStaleMinutes] = useState('5')
 

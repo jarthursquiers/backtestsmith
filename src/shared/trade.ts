@@ -1,4 +1,9 @@
-import type { ButterflyDefinition, DataQuality } from '../domain/butterfly.js'
+import type {
+  ButterflyDefinition,
+  ButterflyPriceAudit,
+  DataQuality,
+  InvalidButterflyPrice
+} from '../domain/butterfly.js'
 import type { Excursions } from './excursions.js'
 
 /** Why a trade was closed. */
@@ -22,10 +27,14 @@ export interface TradeResult {
   entryUnderlying?: number
   /** Net debit paid, in price points, including entry slippage. */
   entryDebit: number
+  /** Optional for compatibility with studies saved before price auditing existed. */
+  entryAudit?: ButterflyPriceAudit
 
   exitTimestamp: number
   /** Value received, in price points, after exit slippage. */
   exitValue: number
+  /** Raw leg mark for the minute that caused the exit. */
+  exitAudit?: ButterflyPriceAudit
   exitReason: ExitReasonDto
   /**
    * True when minute bars could not establish that the exit trigger actually
@@ -64,4 +73,6 @@ export interface TradeResult {
   minNormalizedDistance?: number
 
   quality: DataQuality
+  /** Representative impossible marks excluded from this reconstructed path. */
+  invalidPriceSamples?: InvalidButterflyPrice[]
 }

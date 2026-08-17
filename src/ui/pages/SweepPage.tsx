@@ -88,8 +88,8 @@ export function SweepPage() {
     placement: { type: 'expectedMove', buffer: 0 },
     wingWidth: 25,
     quantity: 1,
-    pricing: { model: 'close', slippage: 0, missingDataMode: 'carryForward', maxStaleMinutes: 5 },
-    minimumCoverage: 0.5,
+    pricing: { model: 'close', slippage: 0.05, missingDataMode: 'carryForward', maxStaleMinutes: 1 },
+    minimumCoverage: 0.8,
     managements: ['hold']
   })
 

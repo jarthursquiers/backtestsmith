@@ -26,7 +26,13 @@ const TRADE_HEADER = [
   'entry_debit', 'exit_utc', 'exit_value', 'exit_reason', 'ambiguous',
   'pnl_dollars', 'pnl_pct', 'holding_minutes', 'exit_dte',
   'mfe_pct', 'mae_pct', 'mfe_capture', 'profit_giveback',
-  'min_normalized_distance', 'coverage', 'freshness'
+  'min_normalized_distance', 'coverage', 'freshness', 'invalid_price_minutes',
+  'entry_lower_price', 'entry_center_price', 'entry_upper_price',
+  'entry_lower_observed_utc', 'entry_center_observed_utc', 'entry_upper_observed_utc',
+  'entry_max_leg_age_ms',
+  'exit_lower_price', 'exit_center_price', 'exit_upper_price',
+  'exit_lower_observed_utc', 'exit_center_observed_utc', 'exit_upper_observed_utc',
+  'exit_max_leg_age_ms'
 ]
 
 /** Trade-level export, one row per trade per management method. */
@@ -44,7 +50,18 @@ export function tradesToCsv(runId: string, trades: readonly TradeResult[]): stri
       t.pnlDollars, t.pnlPct, t.holdingMinutes, t.exitDte,
       t.excursions.mfe?.pct ?? '', t.excursions.mae?.pct ?? '',
       t.mfeCaptureRatio ?? '', t.profitGiveback,
-      t.minNormalizedDistance ?? '', t.quality.coverage, t.quality.freshness
+      t.minNormalizedDistance ?? '', t.quality.coverage, t.quality.freshness,
+      t.quality.invalidPriceMinutes ?? '',
+      t.entryAudit?.lower.price ?? '', t.entryAudit?.center.price ?? '', t.entryAudit?.upper.price ?? '',
+      t.entryAudit ? new Date(t.entryAudit.lower.observedAt).toISOString() : '',
+      t.entryAudit ? new Date(t.entryAudit.center.observedAt).toISOString() : '',
+      t.entryAudit ? new Date(t.entryAudit.upper.observedAt).toISOString() : '',
+      t.entryAudit?.maxLegAgeMs ?? '',
+      t.exitAudit?.lower.price ?? '', t.exitAudit?.center.price ?? '', t.exitAudit?.upper.price ?? '',
+      t.exitAudit ? new Date(t.exitAudit.lower.observedAt).toISOString() : '',
+      t.exitAudit ? new Date(t.exitAudit.center.observedAt).toISOString() : '',
+      t.exitAudit ? new Date(t.exitAudit.upper.observedAt).toISOString() : '',
+      t.exitAudit?.maxLegAgeMs ?? ''
     ])
   }
   return toCsv(rows)
@@ -55,13 +72,19 @@ export function seriesToCsv(series: ButterflySeries): string {
   const rows: unknown[][] = [[
     'timestamp_utc', 'butterfly_value', 'pnl_dollars', 'pnl_pct',
     'underlying', 'distance_to_center', 'normalized_distance',
-    'dte', 'trading_dte', 'minutes_since_entry', 'stale', 'max_leg_age_ms'
+    'dte', 'trading_dte', 'minutes_since_entry', 'stale', 'max_leg_age_ms',
+    'lower_price', 'center_price', 'upper_price',
+    'lower_observed_utc', 'center_observed_utc', 'upper_observed_utc'
   ]]
   for (const o of series.observations) {
     rows.push([
       new Date(o.timestamp).toISOString(), o.butterflyValue, o.pnlDollars, o.pnlPct,
       o.underlyingPrice ?? '', o.distanceToCenter ?? '', o.normalizedDistanceToCenter ?? '',
-      o.dte, o.tradingDte, o.minutesSinceEntry, o.stale, o.maxLegAgeMs
+      o.dte, o.tradingDte, o.minutesSinceEntry, o.stale, o.maxLegAgeMs,
+      o.priceAudit?.lower.price ?? '', o.priceAudit?.center.price ?? '', o.priceAudit?.upper.price ?? '',
+      o.priceAudit ? new Date(o.priceAudit.lower.observedAt).toISOString() : '',
+      o.priceAudit ? new Date(o.priceAudit.center.observedAt).toISOString() : '',
+      o.priceAudit ? new Date(o.priceAudit.upper.observedAt).toISOString() : ''
     ])
   }
   return toCsv(rows)
@@ -85,13 +108,26 @@ export function studyToJson(run: StudyRunResult): string {
       entriesAttempted: run.entriesAttempted,
       skipped: run.skipped,
       summaries: run.summaries,
+      trades: run.trades,
       caveats: [
         'Results derive from trade-derived aggregate bars, not historical NBBO quotes, so fills are estimates rather than guaranteed executions.',
         'Exits marked ambiguous could not be established from minute bars; the adverse outcome was assumed.',
+        'Marks outside the static 0-to-wing-width butterfly bounds are rejected and counted as unpriced minutes.',
+        'Entries require fresh same-minute prices for all three legs inside the configured entry window.',
         'Sample sizes here are small enough that differences between management methods may not be distinguishable from chance.'
       ]
     },
     null,
     2
   )
+}
+
+/** Filesystem-safe UTC timestamp keeps repeated exports naturally sortable. */
+export function studyJsonFilename(runId: string, createdAt: number): string {
+  const stamp = new Date(createdAt)
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}Z$/, 'Z')
+    .replace('T', '-')
+  return `study-${stamp}-${runId}.json`
 }

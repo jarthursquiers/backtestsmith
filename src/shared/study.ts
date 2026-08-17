@@ -171,8 +171,10 @@ export interface StudyRunResult {
  */
 export function normalizeSkipReason(reason: string): string {
   if (reason.startsWith('data quality ')) return 'option data quality below threshold'
+  if (reason.startsWith('invalid butterfly entry')) return 'invalid butterfly entry price'
   if (reason.startsWith('expected move unavailable:')) return 'expected move could not be measured'
   return reason
+    .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, 'TIMESTAMP')
     .replace(/\d{4}-\d{2}-\d{2}/g, 'DATE')
     .replace(/\d+(\.\d+)?%/g, 'N%')
     .replace(/\b\d+(\.\d+)?\b/g, 'N')

@@ -181,6 +181,12 @@ export async function runStudy(
   source: StudyDataSource,
   hooks: StudyHooks = {}
 ): Promise<StudyOutcome> {
+  if (!Number.isFinite(config.pricing.slippage) || config.pricing.slippage < 0) {
+    throw new Error('Slippage must be a non-negative number of option points.')
+  }
+  if (config.minimumCoverage < 0 || config.minimumCoverage > 1) {
+    throw new Error('Minimum coverage must be between 0 and 1.')
+  }
   const entryStrategy = buildEntryStrategy(config)
   const managements = buildManagementSet(config.managements)
   const missingData: MissingDataPolicy =
@@ -491,11 +497,27 @@ export async function runStudy(
         legBars: { lower, center, upper },
         underlyingBars,
         entryTimestamp: filledAt,
+        entryDeadlineTimestamp: entryTimestamp + windowMinutes * 60_000,
+        requireFreshEntry: true,
         pricing
       })
     } catch (error) {
       skip(error instanceof Error ? error.message : String(error))
       continue
+    }
+
+    if ((reconstructed.quality.invalidPriceMinutes ?? 0) > 0) {
+      log.warn('invalid butterfly marks rejected', {
+        date: entryDate,
+        expiration: choice.expiration,
+        tickers: {
+          lower: definition.lowerTicker,
+          center: definition.centerTicker,
+          upper: definition.upperTicker
+        },
+        invalidPriceMinutes: reconstructed.quality.invalidPriceMinutes,
+        samples: reconstructed.invalidPriceSamples ?? []
+      })
     }
 
     if (reconstructed.quality.coverage < config.minimumCoverage) {
@@ -519,6 +541,7 @@ export async function runStudy(
         },
         barCounts,
         quality: q,
+        invalidPriceSamples: reconstructed.invalidPriceSamples ?? [],
         coverageSensitivity: sensitivity
       })
       skip(
@@ -526,6 +549,7 @@ export async function runStudy(
           `expiration ${choice.expiration}, strikes ${definition.lowerStrike}/${definition.centerStrike}/${definition.upperStrike}: ` +
           `${q.pricedMinutes}/${q.expectedMinutes} minutes priced, fresh ${q.freshMinutes}, stale ${q.staleMinutes}, ` +
           `unpriced ${q.unpricedMinutes}, longest gap ${q.longestStaleRunMinutes}m; ` +
+          `invalid synthetic prices ${q.invalidPriceMinutes ?? 0}; ` +
           `bars L/C/U ${barCounts.lower}/${barCounts.center}/${barCounts.upper}; ` +
           `missing L/C/U ${q.missingByLeg.lower}/${q.missingByLeg.center}/${q.missingByLeg.upper}; ` +
           `coverage sensitivity ${sensitivity.map((s) => `${s.maxStaleMinutes}m=${(s.coverage * 100).toFixed(1)}%`).join(', ')}`

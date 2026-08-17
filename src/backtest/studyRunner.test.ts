@@ -8,8 +8,15 @@ import {
   tradingDaysBetween
 } from '../core/time/marketTime.js'
 import { preflightStudy, runStudy, type StudyDataSource } from './studyRunner.js'
-import { resolveIndexTicker } from '../shared/study.js'
+import { normalizeSkipReason, resolveIndexTicker } from '../shared/study.js'
 import { computeMetrics } from './metrics.js'
+
+function syntheticOptionPrice(ticker: string): number {
+  const strike = Number(ticker.slice(-8)) / 1000
+  const base = ticker.includes('P') ? 12 : 10
+  // Positive convexity gives every symmetric butterfly a small valid debit.
+  return base + ((strike - 6000) ** 2) / 5000
+}
 
 /**
  * A synthetic market with full data everywhere, so the orchestration can be
@@ -76,7 +83,7 @@ function makeSource(overrides: Partial<StudyDataSource> = {}): StudyDataSource &
       const out: OptionBar[] = []
       // Session minutes only. Emitting overnight and weekend minutes would be
       // both unrealistic and needlessly slow.
-      const price = ticker.includes('P') ? 12 : 10
+      const price = syntheticOptionPrice(ticker)
       for (const date of tradingDaysBetween(from, to)) {
         const open = easternToTimestamp(date, 9, 30)
         for (let i = 0; i < sessionMinuteCount(date); i++) {
@@ -181,11 +188,12 @@ describe('study runner', () => {
     // Only the entry minute is ever priced, so coverage is near zero.
     const sparse = makeSource({
       async getOptionBars(ticker, from) {
+        const price = syntheticOptionPrice(ticker)
         return [
           {
             ticker,
             timestamp: easternToTimestamp(from, 9, 35),
-            open: 10, high: 10, low: 10, close: 10, volume: 1
+            open: price, high: price, low: price, close: price, volume: 1
           }
         ]
       }
@@ -361,6 +369,12 @@ describe('preflight', () => {
 })
 
 describe('skip reason grouping', () => {
+  it('keeps ISO timestamps readable when normalizing detailed reasons', () => {
+    expect(normalizeSkipReason(
+      'The butterfly could not be priced at any minute by 2026-06-15T13:50:00.000Z: all three legs require fresh prices'
+    )).toContain('TIMESTAMP')
+  })
+
   it('collapses one shared cause into a single tally entry', async () => {
     const source = makeSource({ getChain: async () => [] })
     const outcome = await runStudy(CONFIG, source)
@@ -386,7 +400,7 @@ describe('entry window', () => {
       getUnderlyingMinutes: async () => [],
       async getOptionBars(ticker, from, to) {
         const out = []
-        const price = ticker.includes('P') ? 12 : 10
+        const price = syntheticOptionPrice(ticker)
         for (const date of tradingDaysBetween(from, to)) {
           const open = easternToTimestamp(date, 9, 30)
           for (let i = 0; i < sessionMinuteCount(date); i += everyMinutes) {
@@ -422,7 +436,7 @@ describe('entry window', () => {
     const delayedStraddle = makeSource({
       async getOptionBars(ticker, from, to) {
         const out: OptionBar[] = []
-        const price = ticker.includes('P') ? 12 : 10
+        const price = syntheticOptionPrice(ticker)
         for (const date of tradingDaysBetween(from, to)) {
           const first = easternToTimestamp(date, 9, 50)
           const count = sessionMinuteCount(date) - 20
@@ -468,18 +482,19 @@ describe('entry window', () => {
     }
   })
 
-  it('carry-forward alone suffices when gaps are inside its tolerance', async () => {
-    // Prints every 5 minutes: 09:35 is reachable from 09:36 by carrying one
-    // minute, so no window is required.
+  it('does not use a carried-forward leg to establish an entry', async () => {
+    // Prints every 5 minutes: the old engine entered at 09:36 using 09:35
+    // prices. Entry execution now requires all three legs in the same minute.
     const outcome = await runStudy({ ...sparseConfig, entryWindowMinutes: 0 }, sparseSource(5))
-    expect(outcome.series.length).toBeGreaterThan(0)
+    expect(outcome.series).toHaveLength(0)
+    expect(outcome.skipped.some((s) => /fresh same-minute prices/.test(s.reason))).toBe(true)
   })
 
   it('does not let the window run past its bound', async () => {
     const late = makeSource({
       getUnderlyingMinutes: async () => [],
       async getOptionBars(ticker, from) {
-        const price = ticker.includes('P') ? 12 : 10
+        const price = syntheticOptionPrice(ticker)
         return [{
           ticker, timestamp: easternToTimestamp(from, 9, 30),
           open: price, high: price, low: price, close: price, volume: 1

@@ -59,10 +59,10 @@ export function RunStudyPage() {
   const [offsetPoints, setOffsetPoints] = useState('100')
   const [wingsAway, setWingsAway] = useState('4')
   const [buffer, setBuffer] = useState('0')
-  const [slippage, setSlippage] = useState('0')
+  const [slippage, setSlippage] = useState('0.05')
   const [missingDataMode, setMissingDataMode] = useState<'strict' | 'carryForward'>('carryForward')
-  const [maxStale, setMaxStale] = useState('5')
-  const [minimumCoverage, setMinimumCoverage] = useState('0.5')
+  const [maxStale, setMaxStale] = useState('1')
+  const [minimumCoverage, setMinimumCoverage] = useState('0.8')
   const [label, setLabel] = useState('')
   const [selected, setSelected] = useState<string[]>(DEFAULT_SELECTION)
 
@@ -225,6 +225,12 @@ export function RunStudyPage() {
         </div>
 
         <Card title="Execution assumptions" subtitle="Recorded with the run, since they change the numbers">
+          <div className="mb-3">
+            <Notice tone="info">
+              Safety checks are always on: entries require fresh same-minute prices for all three legs, must fill
+              inside the entry window, and every synthetic mark must remain between zero and the wing width.
+            </Notice>
+          </div>
           <div className="grid gap-3 md:grid-cols-4">
             <Field label="Slippage" hint="Points against you, each way">
               <Input type="number" step="0.05" value={slippage} onChange={(e) => setSlippage(e.target.value)} />

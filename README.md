@@ -389,7 +389,8 @@ never pretends otherwise:
   the strategy with a gap it never had to earn.
 - **A trigger reachable intra-minute but unconfirmed by the mark is reported as
   `ambiguous`.** Reachability is judged against bounds derived from the legs'
-  bars. Those bounds are deliberately wider than the butterfly's true range -
+  bars and intersected with the package's static zero-to-wing-width bounds.
+  The raw leg-derived bounds are deliberately wider than the butterfly's true range -
   the three legs hit their own extremes at different instants, so no combination
   of leg OHLC recovers the real path - which makes them sound for "could this
   have been touched" and unsound for anything else.

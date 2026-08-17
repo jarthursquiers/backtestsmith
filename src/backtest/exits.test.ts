@@ -39,6 +39,7 @@ interface PointSpec {
   underlying?: number
   /** Explicit intra-minute bounds, for ambiguity tests. */
   bounds?: { low: number; high: number }
+  stale?: boolean
 }
 
 /** Builds a series from explicit butterfly values, one per minute. */
@@ -53,8 +54,8 @@ function makeSeries(points: readonly (number | PointSpec)[]): ButterflySeries {
       dte: spec.dte ?? 3,
       tradingDte: spec.tradingDte ?? 2,
       minutesSinceEntry: i,
-      stale: false,
-      maxLegAgeMs: 0
+      stale: spec.stale ?? false,
+      maxLegAgeMs: spec.stale ? 60_000 : 0
     }
     if (spec.underlying !== undefined) {
       observation.underlyingPrice = spec.underlying
@@ -137,6 +138,16 @@ describe('the specification example', () => {
     expect(result.exitReason).toBe('expiration')
     expect(result.pnlPct).toBeCloseTo(60, 6)
   })
+
+  it('cannot fill a target above the butterfly wing width', () => {
+    const series = makeSeries([
+      { value: 2, bounds: { low: -50, high: 100 } },
+      { value: 3, bounds: { low: -50, high: 100 } }
+    ])
+    const result = simulateTrade(series, profitTarget(1500))
+    expect(result.exitReason).toBe('expiration')
+    expect(result.exitValue).toBe(3)
+  })
 })
 
 describe('stop loss', () => {
@@ -182,6 +193,17 @@ describe('time exit', () => {
     const result = simulateTrade(series, timeExit({ atDte: 1, useTradingDte: true }))
     expect(result.exitReason).toBe('timeExit')
     expect(result.holdingMinutes).toBe(1)
+  })
+
+  it('waits for a fresh mark when the scheduled DTE first arrives stale', () => {
+    const series = makeSeries([
+      { value: 2.0, dte: 3 },
+      { value: 8.0, dte: 2, stale: true },
+      { value: 3.0, dte: 2 }
+    ])
+    const result = simulateTrade(series, timeExit({ atDte: 2 }))
+    expect(result.holdingMinutes).toBe(2)
+    expect(result.exitValue).toBe(3)
   })
 })
 

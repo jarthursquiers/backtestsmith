@@ -113,6 +113,20 @@ export function ResultsPage() {
     })
   }, [curves])
 
+  const invalidPriceAudit = useMemo(() => {
+    if (!run) return { entries: 0, minutes: 0 }
+    const byEntry = new Map<number, number>()
+    for (const trade of run.trades) {
+      const count = trade.quality.invalidPriceMinutes ?? 0
+      byEntry.set(trade.entryTimestamp, Math.max(byEntry.get(trade.entryTimestamp) ?? 0, count))
+    }
+    const counts = [...byEntry.values()]
+    return {
+      entries: counts.filter((count) => count > 0).length,
+      minutes: counts.reduce((sum, count) => sum + count, 0)
+    }
+  }, [run])
+
   const COLORS = ['#4f9cf9', '#34d399', '#fbbf24']
 
   const header = (key: SortKey, label: string) => (
@@ -193,6 +207,14 @@ export function ResultsPage() {
                 <div className="mt-3 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-[11px] leading-relaxed text-warn">
                   Only {run.entryCount} entries. That is far too few to distinguish management methods from
                   chance — treat differences below as hypothesis generation, not evidence.
+                </div>
+              )}
+
+              {invalidPriceAudit.minutes > 0 && (
+                <div className="mt-3 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-[11px] leading-relaxed text-warn">
+                  Rejected {invalidPriceAudit.minutes} impossible synthetic mark(s) across {invalidPriceAudit.entries}{' '}
+                  entries. They were excluded and counted as unpriced minutes. The Study JSON contains raw leg
+                  prices and timestamps for representative failures.
                 </div>
               )}
 

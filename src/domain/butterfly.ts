@@ -51,6 +51,22 @@ export interface LegQuote {
   ageMs: number
 }
 
+/** The exact three leg observations behind one synthetic butterfly mark. */
+export interface ButterflyPriceAudit {
+  timestamp: number
+  value: number
+  lower: LegQuote
+  center: LegQuote
+  upper: LegQuote
+  stale: boolean
+  maxLegAgeMs: number
+}
+
+/** A mark rejected because the three independent leg prices violate static bounds. */
+export interface InvalidButterflyPrice extends ButterflyPriceAudit {
+  reason: string
+}
+
 /**
  * One minute of a butterfly's life.
  *
@@ -86,6 +102,8 @@ export interface ButterflyObservation {
   stale: boolean
   /** Largest carry-forward age across the three legs, in milliseconds. */
   maxLegAgeMs: number
+  /** Exact prices and source timestamps used to construct this mark. */
+  priceAudit?: ButterflyPriceAudit
 }
 
 /**
@@ -106,6 +124,8 @@ export interface DataQuality {
   staleMinutes: number
   /** Minutes that could not be priced under the missing-data policy. */
   unpricedMinutes: number
+  /** Fully populated minutes rejected for violating 0 <= butterfly <= wing width. */
+  invalidPriceMinutes?: number
   /** Longest consecutive run of carried-forward or unpriced minutes. */
   longestStaleRunMinutes: number
   /** Minutes each leg was absent, keyed by role. */
@@ -137,6 +157,8 @@ export interface PricingAssumptions {
 
 export const DEFAULT_PRICING: PricingAssumptions = {
   model: 'close',
+  // Low-level reconstruction stays neutral when called directly. User-facing
+  // study and inspector forms default to a non-zero execution allowance.
   slippage: 0,
   // Short carry-forward by default: strict is unusable on OTM wings, but long
   // fills would invent price paths that never existed.
@@ -149,10 +171,14 @@ export interface ButterflySeries {
   /** Net debit paid per butterfly, in price points, including entry slippage. */
   entryDebit: number
   entryTimestamp: number
+  /** Raw leg observations behind the accepted entry debit. */
+  entryAudit?: ButterflyPriceAudit
   entryUnderlying?: number
   observations: ButterflyObservation[]
   quality: DataQuality
   pricing: PricingAssumptions
+  /** Representative rejected marks; bounded so diagnostics stay manageable. */
+  invalidPriceSamples?: InvalidButterflyPrice[]
   /** Non-fatal problems worth surfacing, e.g. a leg with almost no data. */
   warnings: string[]
 }

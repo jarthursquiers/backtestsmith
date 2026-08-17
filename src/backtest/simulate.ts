@@ -33,6 +33,11 @@ export function simulateTrade(
   if (observations.length === 0) {
     throw new Error('Cannot simulate a trade with no observations')
   }
+  if (entryDebit <= 0 || entryDebit > definition.wingWidth + 0.01) {
+    throw new Error(
+      `Cannot simulate an invalid ${definition.wingWidth}-wide butterfly entry debit of ${entryDebit.toFixed(2)}`
+    )
+  }
 
   const position: PositionState = {
     definition,
@@ -74,6 +79,12 @@ export function simulateTrade(
   }
 
   const exitObservation = observations[exitIndex]!
+  if (!Number.isFinite(exitValue) || exitValue < -0.01 || exitValue > definition.wingWidth + 0.01) {
+    throw new Error(
+      `Exit strategy ${strategy.id} produced invalid butterfly value ${exitValue} ` +
+        `outside 0..${definition.wingWidth}`
+    )
+  }
   // Slippage works against the trader on the way out as it did on the way in.
   const netExitValue = Math.max(0, exitValue - exitSlippage)
 
@@ -124,8 +135,10 @@ export function simulateTrade(
     entryTimestamp: series.entryTimestamp,
     ...(series.entryUnderlying !== undefined ? { entryUnderlying: series.entryUnderlying } : {}),
     entryDebit,
+    ...(series.entryAudit ? { entryAudit: series.entryAudit } : {}),
     exitTimestamp: exitObservation.timestamp,
     exitValue: netExitValue,
+    ...(exitObservation.priceAudit ? { exitAudit: exitObservation.priceAudit } : {}),
     exitReason,
     ambiguous,
     ...(note !== undefined ? { note } : {}),
@@ -142,7 +155,10 @@ export function simulateTrade(
     firstReached,
     lowestAfterReaching,
     ...(minNormalizedDistance !== undefined ? { minNormalizedDistance } : {}),
-    quality: qualityUpToExit(series.quality, observations.length, exitIndex + 1)
+    quality: qualityUpToExit(series.quality, observations.length, exitIndex + 1),
+    ...(series.invalidPriceSamples && series.invalidPriceSamples.length > 0
+      ? { invalidPriceSamples: series.invalidPriceSamples }
+      : {})
   }
 }
 
@@ -167,6 +183,7 @@ function qualityUpToExit(quality: DataQuality, totalObservations: number, heldOb
     freshMinutes,
     staleMinutes: Math.max(0, pricedMinutes - freshMinutes),
     unpricedMinutes: Math.max(0, expectedMinutes - pricedMinutes),
+    invalidPriceMinutes: Math.round((quality.invalidPriceMinutes ?? 0) * fraction),
     coverage: expectedMinutes > 0 ? pricedMinutes / expectedMinutes : 0,
     freshness: pricedMinutes > 0 ? freshMinutes / pricedMinutes : 0
   }
