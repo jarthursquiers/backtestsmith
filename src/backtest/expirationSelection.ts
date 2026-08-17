@@ -1,5 +1,6 @@
 import { calendarDaysBetween, tradingDaysUntil } from '../core/time/dte.js'
 import type { MarketDate } from '../core/time/marketTime.js'
+import type { ExpirationRule } from '../shared/study.js'
 
 /**
  * Choosing which expiration to trade.
@@ -9,13 +10,7 @@ import type { MarketDate } from '../core/time/marketTime.js'
  * holiday intervenes, and decay follows sessions rather than dates.
  */
 
-export type ExpirationRule =
-  /** Closest to the target in either direction; ties go to the longer-dated. */
-  | 'nearest'
-  /** Closest expiration at or beyond the target. */
-  | 'preferGte'
-  /** Closest expiration at or before the target. */
-  | 'preferLte'
+export type { ExpirationRule } from '../shared/study.js'
 
 export interface ExpirationChoice {
   expiration: MarketDate

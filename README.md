@@ -23,7 +23,7 @@ Built in verifiable phases. **Phases 1 and 2 are complete.**
 | 5 | Single butterfly reconstruction, minute by minute | Done |
 | 6 | Single-trade management rules | Done |
 | 7 | Automated entry generation (9 EMA, 7 DTE, placement) | Engine done; batch runner is Phase 8 |
-| 8 | Batch backtester and summary statistics | Planned |
+| 8 | Batch backtester and summary statistics | Engine done; UI pending |
 | 9 | Management comparison and equity curves | Planned |
 | 10 | MFE / MAE / conditional path analytics | Planned |
 | 11 | Generic parameter sweep | Planned |
@@ -276,6 +276,29 @@ derived from it.
 Expected-move placement requires the move to be supplied from measured data. It
 is deliberately not estimated internally, because deriving it needs an
 at-the-money straddle price at the entry minute.
+
+## Study metrics
+
+Statistics report distributions rather than single numbers wherever a mean would
+mislead. Butterfly returns are heavily skewed - many small losses against
+occasional large gains - so a **median sits beside every average**, and a study
+where the mean trade is positive while the median is negative is telling you
+something a single figure would hide.
+
+Two deliberate choices:
+
+- **Ratios that would divide by zero are null, not Infinity.** A profit factor
+  with no losses is an unanswerable question, not a large number.
+- **Risk-adjusted figures are per-trade ratios, not annualized Sharpe.** The
+  sample is a few hundred overlapping trades over a short window; scaling to a
+  yearly figure would overstate what the data supports, so they are named
+  `returnPerUnitRisk` and `returnPerUnitDownside` instead.
+
+Equity curves order by **exit** rather than entry, since a drawdown is realized
+when a trade closes. Both one-contract and equal-risk sizing are supported;
+equal-risk is the fairer basis for comparing management rules, because otherwise
+a cheap butterfly and an expensive one contribute unequally purely through their
+debit rather than through the rule being tested.
 
 ## Management rules
 

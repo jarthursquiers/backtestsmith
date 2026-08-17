@@ -1,7 +1,15 @@
 import type { LegPricingModel } from '../domain/butterfly.js'
-import type { ExpirationRule } from '../backtest/expirationSelection.js'
 import type { PositionSizing, StudyMetrics } from './metrics.js'
 import type { TradeResult } from './trade.js'
+
+/** How a target DTE resolves against the expirations that actually exist. */
+export type ExpirationRule =
+  /** Closest to the target in either direction; ties go to the longer-dated. */
+  | 'nearest'
+  /** Closest expiration at or beyond the target. */
+  | 'preferGte'
+  /** Closest expiration at or before the target. */
+  | 'preferLte'
 
 /** Entry signal configuration. */
 export type EntryConfig =
