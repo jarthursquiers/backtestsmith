@@ -41,6 +41,7 @@ function trade(
     giveback?: number
     holdingMinutes?: number
     reached?: string[]
+    lowAfter?: Record<string, number>
     ambiguous?: boolean
   } = {}
 ): TradeResult {
@@ -48,8 +49,11 @@ function trade(
   const pnlPct = (pnlDollars / (entryDebit * 100)) * 100
 
   const firstReached: Record<string, number | null> = {}
+  const lowestAfterReaching: Record<string, number | null> = {}
   for (const t of ['25', '50', '100', '150', '200', '300']) {
-    firstReached[t] = opts.reached?.includes(t) ? 10 : null
+    const hit = opts.reached?.includes(t) ?? false
+    firstReached[t] = hit ? 10 : null
+    lowestAfterReaching[t] = hit ? (opts.lowAfter?.[t] ?? pnlPct) : null
   }
 
   return {
@@ -73,6 +77,7 @@ function trade(
     profitGiveback: opts.giveback ?? 0,
     mfeCaptureRatio: opts.capture === undefined ? 1 : opts.capture,
     firstReached,
+    lowestAfterReaching,
     quality: {
       expectedMinutes: 390, pricedMinutes: 390, freshMinutes: 390, staleMinutes: 0,
       unpricedMinutes: 0, longestStaleRunMinutes: 0,

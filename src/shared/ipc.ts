@@ -6,6 +6,8 @@ import type { SchwabBackfillRequest, SchwabBackfillResult, SchwabConnectionStatu
 import type { ChainSummary, ReconstructRequest, ReconstructResponse } from './butterfly.js'
 import type { ParityValidationRequest, ParityValidationResponse } from './parity.js'
 import type { StudyConfig, StudyProgress, StudyRunResult, StudyRunSummary } from './study.js'
+import type { AnalyticsReport } from './analytics.js'
+import type { SweepAxis, SweepResult } from './sweep.js'
 import type {
   CsvImportOptions,
   CsvImportResult,
@@ -38,6 +40,12 @@ export const IPC = {
   massiveGetContracts: 'massive:getContracts',
   massiveGetOptionBars: 'massive:getOptionBars',
   massiveGetUnderlyingBars: 'massive:getUnderlyingBars',
+
+  studyAnalytics: 'study:analytics',
+  studyExportTrades: 'study:exportTrades',
+  studyExportJson: 'study:exportJson',
+  sweepEstimate: 'sweep:estimate',
+  sweepRun: 'sweep:run',
 
   studyRun: 'study:run',
   studyCancel: 'study:cancel',
@@ -129,6 +137,22 @@ export interface AppApi {
     remove(runId: string): Promise<void>
     /** Subscribes to progress while a study runs. Returns an unsubscribe. */
     onProgress(listener: (progress: StudyProgress) => void): () => void
+    /** Aggregate research views for one management method within a run. */
+    analytics(runId: string, strategyId: string): Promise<AnalyticsReport>
+    /** Writes trade-level CSV; returns the path, or null if cancelled. */
+    exportTrades(runId: string): Promise<string | null>
+    /** Writes the full study JSON including config and caveats. */
+    exportJson(runId: string): Promise<string | null>
+  }
+  sweep: {
+    /** Cost of a sweep before running it. */
+    estimate(axes: SweepAxis[]): Promise<{
+      entryCombinations: number
+      managementVariants: number
+      requiresRefetch: boolean
+    }>
+    /** Runs every combination, reusing cached data between them. */
+    run(base: StudyConfig, axes: SweepAxis[], objective: string): Promise<SweepResult[]>
   }
   parity: {
     /** Measures derived-index accuracy against real index data. */

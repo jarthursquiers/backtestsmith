@@ -109,9 +109,10 @@ export function DashboardPage() {
               { phase: 'Phase 6', label: 'Single-trade management rules', done: true },
               { phase: 'Phase 7', label: 'Automated entry generation (9 EMA, 7 DTE, placement)', done: true },
               { phase: 'Phase 8', label: 'Batch backtester and summary statistics', done: true },
-              { phase: 'Phase 9', label: 'Management comparison and equity curves', done: false },
-              { phase: 'Phase 10', label: 'MFE / MAE / conditional path analytics', done: false },
-              { phase: 'Phase 11', label: 'Generic parameter sweep', done: false }
+              { phase: 'Phase 9', label: 'Management comparison and equity curves', done: true },
+              { phase: 'Phase 10', label: 'MFE / MAE / conditional path analytics', done: true },
+              { phase: 'Phase 11', label: 'Generic parameter sweep', done: true },
+              { phase: 'Phase 12', label: 'Exports, analytics charts, diagnostics', done: true }
             ].map((row) => (
               <li key={row.phase} className="flex items-center gap-2.5">
                 <span

@@ -24,10 +24,10 @@ Built in verifiable phases. **Phases 1 and 2 are complete.**
 | 6 | Single-trade management rules | Done |
 | 7 | Automated entry generation (9 EMA, 7 DTE, placement) | Done |
 | 8 | Batch backtester and summary statistics | Done |
-| 9 | Management comparison and equity curves | Planned |
-| 10 | MFE / MAE / conditional path analytics | Planned |
-| 11 | Generic parameter sweep | Planned |
-| 12 | Polish, exports, diagnostics, performance | Planned |
+| 9 | Management comparison and equity curves | Done |
+| 10 | MFE / MAE / conditional path analytics | Done |
+| 11 | Generic parameter sweep | Done |
+| 12 | Exports, analytics charts, diagnostics | Done |
 
 ## Getting started
 
@@ -288,6 +288,44 @@ and these numbers are intended to be discussed publicly.
 Summaries are **recomputed on load** rather than stored, so a later change to a
 metric definition applies to historic runs instead of freezing an old
 interpretation alongside the trades.
+
+## Conditional path analysis
+
+The question a summary table cannot answer: *given that a butterfly already
+reached +50%, how often does it go on to +100%, and how often does it hand the
+gain back and finish a loser?* Those conditional probabilities describe what
+managing the trade is worth, which is the point of the study.
+
+Two details make the answers trustworthy:
+
+- **Give-back is measured after the threshold, not overall.** A trade that dipped
+  badly early and then rallied has a deep maximum adverse excursion but never
+  gave anything back after reaching the level. Distinguishing them requires the
+  lowest return *following* first touch, which is captured while the path is
+  walked.
+- **Every proportion carries a Wilson confidence interval.** Conditioning shrinks
+  the sample fast, and with a few hundred trades the difference between 60% and
+  70% frequently is not distinguishable. The interval is displayed beside the
+  figure so it cannot be read as precision it does not have.
+
+## Parameter sweeps
+
+Any configuration axis can be swept, and the cost depends on which:
+
+- **Management axes are nearly free.** Profit targets and stops run against an
+  already-reconstructed price path, so a hundred targets cost one data pass and a
+  hundred cheap simulations. They fold into the management set rather than
+  multiplying the run count.
+- **Entry axes force a refetch.** Target DTE, wing width, entry time, and
+  placement change which contracts are traded, so each combination reconstructs
+  from scratch.
+
+The estimated cost is shown before a sweep starts, because the difference is
+between a run that finishes in seconds and one that runs overnight.
+
+A sweep is an optimizer, and optimizers overfit. The screen says so, and the
+recommended use is to treat any result as a hypothesis and check it on a period
+that was not swept.
 
 ## Study metrics
 

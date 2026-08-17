@@ -25,6 +25,13 @@ import type { ParityValidationRequest, ParityValidationResponse } from '../../sh
 import { sessionMinuteGrid } from '../../backtest/reconstruct.js'
 import { runStudy, type StudyDataSource } from '../../backtest/studyRunner.js'
 import { computeMetrics } from '../../backtest/metrics.js'
+import { buildAnalyticsReport } from '../../backtest/conditionalPaths.js'
+import { seriesToCsv, studyToJson, tradesToCsv } from '../../backtest/exports.js'
+import { estimateSweepCost, expandSweep } from '../../backtest/parameterSweep.js'
+import type { SweepAxis, SweepResult } from '../../shared/sweep.js'
+import type { StudyMetrics } from '../../shared/metrics.js'
+import type { AppServices } from './services.js'
+import { writeFileSync } from 'node:fs'
 import type {
   ManagementSummary,
   StudyConfig,
@@ -61,6 +68,63 @@ const log = createLogger('ipc')
 
 /** Only one study may run at a time; a second would contend for the same queue. */
 let activeStudy: AbortController | null = null
+
+/**
+ * Data access for the study runner.
+ *
+ * Shared between single studies and sweeps so both go through the same caching
+ * provider, which is what makes a sweep over management parameters cost nothing
+ * beyond the first combination.
+ */
+function buildStudySource(services: AppServices): StudyDataSource {
+  const minuteShape = { timespan: 'minute', multiplier: 1 }
+  const dailyShape = { timespan: 'day', multiplier: 1 }
+  return {
+    getDailyBars: (ticker, from, to) =>
+      services.store.getUnderlyingBars(ticker, tradingDaysBetween(from, to), dailyShape),
+    getUnderlyingMinutes: (ticker, date) =>
+      services.store.getUnderlyingBars(ticker, [date], minuteShape),
+    getChain: (underlying, expiration, type) =>
+      services.provider.getContracts({ underlying, expirationDate: expiration, type, expired: true }),
+    getOptionBars: async (ticker, from, to) =>
+      (await services.provider.getOptionBars({ ticker, from, to, timespan: 'minute' })).bars
+  }
+}
+
+/** Ranks a sweep point. Drawdown is negative, so less negative scores higher. */
+function scoreObjective(metrics: StudyMetrics, objective: string): number {
+  switch (objective) {
+    case 'expectancy':
+      return metrics.expectancy
+    case 'profitFactor':
+      return metrics.profitFactor ?? -Infinity
+    case 'maxDrawdown':
+      return metrics.maxDrawdown
+    case 'winRate':
+      return metrics.winRate
+    case 'capture':
+      return metrics.averageMfeCapture ?? -Infinity
+    default:
+      return metrics.totalPnl
+  }
+}
+
+/** Prompts for a location and writes text, returning the path or null. */
+async function saveTextFile(
+  window: BrowserWindow | null,
+  defaultName: string,
+  filters: { name: string; extensions: string[] }[],
+  contents: string
+): Promise<string | null> {
+  const options = { defaultPath: defaultName, filters }
+  const result = window
+    ? await dialog.showSaveDialog(window, options)
+    : await dialog.showSaveDialog(options)
+  if (result.canceled || !result.filePath) return null
+  writeFileSync(result.filePath, contents, 'utf8')
+  log.info('exported file', { path: result.filePath, bytes: contents.length })
+  return result.filePath
+}
 
 /**
  * Wraps a handler so failures cross the boundary as structured results rather
@@ -122,24 +186,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
     const controller = new AbortController()
     activeStudy = controller
-    const minuteShape = { timespan: 'minute', multiplier: 1 }
-    const dailyShape = { timespan: 'day', multiplier: 1 }
-
-    /*
-     * The runner asks for data; the caching provider decides whether that costs
-     * a request. Underlying reads are cache-only because index data is not
-     * entitled upstream, so reaching out would spend a call to earn a 403.
-     */
-    const source: StudyDataSource = {
-      getDailyBars: (ticker, from, to) =>
-        services.store.getUnderlyingBars(ticker, tradingDaysBetween(from, to), dailyShape),
-      getUnderlyingMinutes: (ticker, date) =>
-        services.store.getUnderlyingBars(ticker, [date], minuteShape),
-      getChain: (underlying, expiration, type) =>
-        services.provider.getContracts({ underlying, expirationDate: expiration, type, expired: true }),
-      getOptionBars: async (ticker, from, to) =>
-        (await services.provider.getOptionBars({ ticker, from, to, timespan: 'minute' })).bars
-    }
+    const source = buildStudySource(services)
 
     let lastSent = 0
     try {
@@ -222,6 +269,115 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     return run
   })
   handle(IPC.studyDelete, (runId: string) => services.studies.remove(runId))
+
+  handle(IPC.studyAnalytics, async (runId: string, strategyId: string) => {
+    const run = await services.studies.load(runId)
+    if (!run) throw new Error(`Run ${runId} was not found.`)
+    return buildAnalyticsReport(run.trades, strategyId)
+  })
+
+  handle(IPC.studyExportTrades, async (runId: string): Promise<string | null> => {
+    const run = await services.studies.load(runId)
+    if (!run) throw new Error(`Run ${runId} was not found.`)
+    return saveTextFile(
+      getWindow(),
+      `trades-${runId}.csv`,
+      [{ name: 'CSV', extensions: ['csv'] }],
+      tradesToCsv(runId, run.trades)
+    )
+  })
+
+  handle(IPC.studyExportJson, async (runId: string): Promise<string | null> => {
+    const run = await services.studies.load(runId)
+    if (!run) throw new Error(`Run ${runId} was not found.`)
+    const ids = [...new Set(run.trades.map((t) => t.strategyId))]
+    run.summaries = ids.map((id) => {
+      const trades = run.trades.filter((t) => t.strategyId === id)
+      return { strategyId: id, strategyLabel: trades[0]?.strategyLabel ?? id, metrics: computeMetrics(trades) }
+    })
+    return saveTextFile(
+      getWindow(),
+      `study-${runId}.json`,
+      [{ name: 'JSON', extensions: ['json'] }],
+      studyToJson(run)
+    )
+  })
+
+  // --- parameter sweep ------------------------------------------------------
+  handle(IPC.sweepEstimate, (axes: SweepAxis[]) => estimateSweepCost(axes))
+
+  handle(IPC.sweepRun, async (
+    base: StudyConfig,
+    axes: SweepAxis[],
+    objective: string
+  ): Promise<SweepResult[]> => {
+    if (activeStudy) throw new Error('A study is already running. Cancel it before starting a sweep.')
+
+    const points = expandSweep(base, axes)
+    const controller = new AbortController()
+    activeStudy = controller
+    const results: SweepResult[] = []
+
+    try {
+      for (const point of points) {
+        if (controller.signal.aborted) break
+
+        const outcome = await runStudy(point.config, buildStudySource(services), {
+          signal: controller.signal,
+          onProgress: (progress) => {
+            const window = getWindow()
+            if (window && !window.isDestroyed()) {
+              window.webContents.send(IPC.studyProgressEvent, {
+                ...progress,
+                // Report sweep position so the UI can show combination N of M.
+                currentDate: `${point.index + 1}/${points.length} · ${progress.currentDate ?? ''}`
+              })
+            }
+          }
+        })
+
+        const all = [...new Set(outcome.trades.map((t) => t.strategyId))].map((id) => {
+          const trades = outcome.trades.filter((t) => t.strategyId === id)
+          return {
+            strategyId: id,
+            strategyLabel: trades[0]?.strategyLabel ?? id,
+            metrics: computeMetrics(trades)
+          }
+        })
+
+        const best = all.length > 0
+          ? all.reduce((a, b) => (scoreObjective(b.metrics, objective) > scoreObjective(a.metrics, objective) ? b : a))
+          : null
+
+        const runResult: StudyRunResult = {
+          runId: randomBytes(8).toString('hex'),
+          createdAt: Date.now(),
+          config: point.config,
+          entryCount: outcome.series.length,
+          entriesAttempted: outcome.entriesAttempted,
+          skipped: outcome.skipped,
+          summaries: all,
+          trades: outcome.trades,
+          sizing: 'oneContract',
+          appVersion: app.getVersion(),
+          ...(process.env.GIT_COMMIT ? { gitCommit: process.env.GIT_COMMIT } : {})
+        }
+        await services.studies.save(runResult, `sweep ${JSON.stringify(point.values)}`)
+
+        results.push({
+          index: point.index,
+          values: point.values,
+          runId: runResult.runId,
+          entryCount: outcome.series.length,
+          best,
+          all
+        })
+      }
+      return results
+    } finally {
+      activeStudy = null
+    }
+  })
 
   // --- put-call parity validation -------------------------------------------
   handle(IPC.parityValidate, async (request: ParityValidationRequest): Promise<ParityValidationResponse> => {

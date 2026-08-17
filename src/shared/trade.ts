@@ -47,6 +47,21 @@ export interface TradeResult {
   mfeCaptureRatio: number | null
   /** Minutes from entry to first touching each return threshold, or null. */
   firstReached: Record<string, number | null>
+  /**
+   * Lowest return seen *after* first reaching each threshold, or null when the
+   * threshold was never reached.
+   *
+   * This is what makes conditional path questions answerable: "of the trades
+   * that reached +100%, how many later fell back below +50%, or all the way to
+   * a loss" cannot be recovered from the final result and the MFE alone, since
+   * the maximum adverse excursion may well have occurred before the peak.
+   */
+  lowestAfterReaching: Record<string, number | null>
+  /**
+   * Closest the underlying came to the centre strike over the held path, in
+   * wing widths. Undefined when no underlying data was available.
+   */
+  minNormalizedDistance?: number
 
   quality: DataQuality
 }

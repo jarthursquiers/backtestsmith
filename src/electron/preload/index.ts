@@ -50,7 +50,14 @@ const api: AppApi = {
     list: (limit) => invoke(IPC.studyList, limit),
     load: (runId) => invoke(IPC.studyLoad, runId),
     remove: (runId) => invoke(IPC.studyDelete, runId),
-    onProgress: (listener) => subscribe<StudyProgress>(IPC.studyProgressEvent, listener)
+    onProgress: (listener) => subscribe<StudyProgress>(IPC.studyProgressEvent, listener),
+    analytics: (runId, strategyId) => invoke(IPC.studyAnalytics, runId, strategyId),
+    exportTrades: (runId) => invoke(IPC.studyExportTrades, runId),
+    exportJson: (runId) => invoke(IPC.studyExportJson, runId)
+  },
+  sweep: {
+    estimate: (axes) => invoke(IPC.sweepEstimate, axes),
+    run: (base, axes, objective) => invoke(IPC.sweepRun, base, axes, objective)
   },
   parity: {
     validate: (request) => invoke(IPC.parityValidate, request)

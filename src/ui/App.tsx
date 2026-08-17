@@ -9,9 +9,10 @@ import { UnderlyingPage } from './pages/UnderlyingPage.js'
 import { TradeInspectorPage } from './pages/TradeInspectorPage.js'
 import { RunStudyPage } from './pages/RunStudyPage.js'
 import { ResultsPage } from './pages/ResultsPage.js'
+import { ComparePage } from './pages/ComparePage.js'
+import { SweepPage } from './pages/SweepPage.js'
 import { DiagnosticsPage } from './pages/DiagnosticsPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
-import { PlannedPage } from './pages/PlannedPage.js'
 
 interface NavItem {
   to: string
@@ -33,10 +34,10 @@ const NAV_GROUPS: { heading: string; items: NavItem[] }[] = [
     items: [
       { to: '/explorer', label: 'Contract Explorer' },
       { to: '/underlying', label: 'SPX Underlying' },
-      { to: '/strategy', label: 'Strategy', phase: 'Phase 7' },
       { to: '/run', label: 'Run Study' },
       { to: '/results', label: 'Results' },
-      { to: '/compare', label: 'Compare', phase: 'Phase 9' },
+      { to: '/compare', label: 'Compare' },
+      { to: '/sweep', label: 'Parameter Sweep' },
       { to: '/trade', label: 'Trade Inspector' }
     ]
   },
@@ -116,28 +117,10 @@ export function App() {
             <Route path="/underlying" element={<UnderlyingPage />} />
             <Route path="/diagnostics" element={<DiagnosticsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
-            <Route
-              path="/strategy"
-              element={
-                <PlannedPage
-                  title="Strategy"
-                  phase="Phase 7"
-                  description="Entry time, target DTE, 9 EMA direction rule, butterfly placement, wing width, pricing model, and missing-data policy."
-                />
-              }
-            />
             <Route path="/run" element={<RunStudyPage />} />
             <Route path="/results" element={<ResultsPage />} />
-            <Route
-              path="/compare"
-              element={
-                <PlannedPage
-                  title="Compare"
-                  phase="Phase 9"
-                  description="Run one identical entry population through many management methods and compare risk-adjusted outcomes."
-                />
-              }
-            />
+            <Route path="/compare" element={<ComparePage />} />
+            <Route path="/sweep" element={<SweepPage />} />
             <Route path="/trade" element={<TradeInspectorPage />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>

@@ -92,9 +92,30 @@ export function simulateTrade(
 
   const reached = firstReachedTimes(held, EXCURSION_THRESHOLDS)
   const firstReached: Record<string, number | null> = {}
+  const lowestAfterReaching: Record<string, number | null> = {}
+
   for (const [threshold, hit] of reached) {
-    firstReached[String(threshold)] = hit ? hit.minutesSinceEntry : null
+    const key = String(threshold)
+    firstReached[key] = hit ? hit.minutesSinceEntry : null
+
+    if (!hit) {
+      lowestAfterReaching[key] = null
+      continue
+    }
+    // Everything from the first touch onward, so a dip before the peak does not
+    // masquerade as a give-back after it.
+    let lowest = Number.POSITIVE_INFINITY
+    for (const o of held) {
+      if (o.minutesSinceEntry < hit.minutesSinceEntry) continue
+      if (o.pnlPct < lowest) lowest = o.pnlPct
+    }
+    lowestAfterReaching[key] = Number.isFinite(lowest) ? lowest : null
   }
+
+  const distances = held
+    .map((o) => o.normalizedDistanceToCenter)
+    .filter((d): d is number => d !== undefined)
+  const minNormalizedDistance = distances.length > 0 ? Math.min(...distances) : undefined
 
   return {
     definition,
@@ -119,6 +140,8 @@ export function simulateTrade(
     profitGiveback,
     mfeCaptureRatio,
     firstReached,
+    lowestAfterReaching,
+    ...(minNormalizedDistance !== undefined ? { minNormalizedDistance } : {}),
     quality: qualityUpToExit(series.quality, observations.length, exitIndex + 1)
   }
 }

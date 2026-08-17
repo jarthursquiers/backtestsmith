@@ -25,6 +25,7 @@ import {
 } from '../components/primitives.js'
 import { fmtCurrency, fmtDate, fmtInt, fmtPct } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
+import { AnalyticsPanel } from '../components/AnalyticsPanel.js'
 
 type SortKey = 'totalPnl' | 'expectancy' | 'maxDrawdown' | 'profitFactor' | 'winRate' | 'capture'
 
@@ -320,6 +321,28 @@ export function ResultsPage() {
                   </Badge>
                 ))}
               </div>
+            </Card>
+
+            <AnalyticsPanel
+              runId={run.runId}
+              strategyIds={run.summaries.map((s) => s.strategyId)}
+              labels={Object.fromEntries(run.summaries.map((s) => [s.strategyId, s.strategyLabel]))}
+            />
+
+            <Card
+              title="Export"
+              subtitle="Trade-level CSV, or the complete study with its configuration and caveats"
+              actions={
+                <div className="flex gap-2">
+                  <Button onClick={() => void window.api.study.exportTrades(run.runId)}>Trades CSV</Button>
+                  <Button onClick={() => void window.api.study.exportJson(run.runId)}>Study JSON</Button>
+                </div>
+              }
+            >
+              <p className="text-[11px] leading-relaxed text-ink-faint">
+                The JSON export carries the configuration and an explicit list of caveats alongside the numbers,
+                because a result shipped without its assumptions cannot be checked by anyone else.
+              </p>
             </Card>
 
             <Card title="Reproducibility" subtitle="The exact configuration this run used">
