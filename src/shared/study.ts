@@ -86,7 +86,7 @@ export interface SkippedEntry {
 }
 
 export interface StudyProgress {
-  phase: 'preflight' | 'entries' | 'saving' | 'done' | 'cancelled' | 'failed'
+  phase: 'preparing' | 'preflight' | 'entries' | 'saving' | 'done' | 'cancelled' | 'failed'
   completed: number
   total: number
   currentDate?: string

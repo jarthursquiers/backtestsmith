@@ -24,6 +24,7 @@ import {
 import type { ParityValidationRequest, ParityValidationResponse } from '../../shared/parity.js'
 import { sessionMinuteGrid } from '../../backtest/reconstruct.js'
 import { preflightStudy, runStudy, type StudyDataSource } from '../../backtest/studyRunner.js'
+import { prepareStudyData } from '../../backtest/studyPreparation.js'
 import { computeMetrics } from '../../backtest/metrics.js'
 import { buildAnalyticsReport } from '../../backtest/conditionalPaths.js'
 import { seriesToCsv, studyToJson, tradesToCsv } from '../../backtest/exports.js'
@@ -39,6 +40,7 @@ import type {
   StudyProgress,
   StudyRunResult
 } from '../../shared/study.js'
+import { resolveIndexTicker } from '../../shared/study.js'
 import {
   centerTouch,
   holdToExpiration,
@@ -78,18 +80,34 @@ let activeStudy: AbortController | null = null
  * provider, which is what makes a sweep over management parameters cost nothing
  * beyond the first combination.
  */
-function buildStudySource(services: AppServices): StudyDataSource {
+function buildStudySource(services: AppServices, signal?: AbortSignal): StudyDataSource {
   const minuteShape = { timespan: 'minute', multiplier: 1 }
   const dailyShape = { timespan: 'day', multiplier: 1 }
   return {
-    getDailyBars: (ticker, from, to) =>
-      services.store.getUnderlyingBars(ticker, tradingDaysBetween(from, to), dailyShape),
-    getUnderlyingMinutes: (ticker, date) =>
-      services.store.getUnderlyingBars(ticker, [date], minuteShape),
+    getDailyBars: async (ticker, from, to) =>
+      signal
+        ? (await services.provider.getUnderlyingBars(
+            { ticker, from, to, timespan: 'day' },
+            { signal, priority: 10 }
+          )).bars
+        : services.store.getUnderlyingBars(ticker, tradingDaysBetween(from, to), dailyShape),
+    getUnderlyingMinutes: async (ticker, date) =>
+      signal
+        ? (await services.provider.getUnderlyingBars(
+            { ticker, from: date, to: date, timespan: 'minute' },
+            { signal, priority: 10 }
+          )).bars
+        : services.store.getUnderlyingBars(ticker, [date], minuteShape),
     getChain: (underlying, expiration, type) =>
-      services.provider.getContracts({ underlying, expirationDate: expiration, type, expired: true }),
+      services.provider.getContracts(
+        { underlying, expirationDate: expiration, type, expired: true },
+        { ...(signal ? { signal } : {}), priority: 20 }
+      ),
     getOptionBars: async (ticker, from, to) =>
-      (await services.provider.getOptionBars({ ticker, from, to, timespan: 'minute' })).bars
+      (await services.provider.getOptionBars(
+        { ticker, from, to, timespan: 'minute' },
+        { ...(signal ? { signal } : {}), priority: 20 }
+      )).bars
   }
 }
 
@@ -225,16 +243,61 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
     const controller = new AbortController()
     activeStudy = controller
-    const source = buildStudySource(services)
+    const source = buildStudySource(services, controller.signal)
 
     const requestsAtStart = services.queue.getStats().completed
+    const orchestrationStartedAt = Date.now()
     let lastSent = 0
     let lastLogged = 0
     let lastLoggedSession = -1
 
     try {
+      const preparation = await prepareStudyData(
+        config,
+        resolveIndexTicker(config),
+        services.provider,
+        {
+          signal: controller.signal,
+          onProgress: (progress) => {
+            const update: StudyProgress = {
+              phase: 'preparing',
+              completed: progress.completed,
+              total: progress.total,
+              ...(progress.currentDate ? { currentDate: progress.currentDate } : {}),
+              stage: progress.stage,
+              tradesGenerated: 0,
+              skipped: 0,
+              elapsedMs: Date.now() - orchestrationStartedAt,
+              apiRequests: services.queue.getStats().completed - requestsAtStart
+            }
+            const window = getWindow()
+            if (window && !window.isDestroyed()) {
+              window.webContents.send(IPC.studyProgressEvent, update)
+            }
+            logStudyLine(update, update.apiRequests ?? 0)
+          }
+        }
+      )
+      console.log(
+        `[study] data ready  ${preparation.dailyBars} daily bars  ` +
+          `${preparation.minuteBars} minute bars across ${preparation.minuteSessions} sessions`
+      )
+
       // A pre-flight check first, so a run that cannot produce anything says so
       // immediately instead of an hour later.
+      const preflightWindow = getWindow()
+      if (preflightWindow && !preflightWindow.isDestroyed()) {
+        preflightWindow.webContents.send(IPC.studyProgressEvent, {
+          phase: 'preflight',
+          completed: 0,
+          total: 1,
+          stage: 'verifying prepared cache',
+          tradesGenerated: 0,
+          skipped: 0,
+          elapsedMs: Date.now() - orchestrationStartedAt,
+          apiRequests: services.queue.getStats().completed - requestsAtStart
+        } satisfies StudyProgress)
+      }
       const preflight = await preflightStudy(config, source)
       log.info('study preflight', {
         sessions: preflight.sessions,
@@ -323,7 +386,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           tradesGenerated: outcome.series.length,
           skipped: outcome.skipped.length,
           skipReasons: outcome.skipReasons,
-          elapsedMs: outcome.elapsedMs,
+          elapsedMs: Date.now() - orchestrationStartedAt,
           apiRequests: services.queue.getStats().completed - requestsAtStart
         })
       }
@@ -340,6 +403,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           total: 0,
           tradesGenerated: 0,
           skipped: 0,
+          elapsedMs: Date.now() - orchestrationStartedAt,
+          apiRequests: services.queue.getStats().completed - requestsAtStart,
           error: message
         })
       }

@@ -10,9 +10,7 @@ import {
   Input,
   Notice,
   PageHeader,
-  Select,
-  Spinner,
-  StatTile
+  Select
 } from '../components/primitives.js'
 import { fmtInt, shiftDate, todayEastern } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
@@ -105,8 +103,6 @@ export function RunStudyPage() {
     managements: selected
   })
 
-  const [preflightState, checkPreflight] = useAsyncAction(() => window.api.study.preflight(config()))
-
   const [runState, run] = useAsyncAction(async () => {
     const result = await window.api.study.run(config(), label.trim() || undefined)
     // Only navigate away when there is something to look at; otherwise the
@@ -125,22 +121,16 @@ export function RunStudyPage() {
     <>
       <PageHeader
         title="Run Study"
-        description="Generate one entry population across a date range and put every entry through the same management methods."
+        description="One click verifies the local cache, downloads anything missing, and runs every management method."
         actions={
           running ? (
             <Button variant="danger" onClick={() => void window.api.study.cancel()}>
               Cancel
             </Button>
           ) : (
-            <div className="flex gap-2">
-              <Button onClick={() => void checkPreflight()} disabled={preflightState.loading}>
-                {preflightState.loading && <Spinner />}
-                Check data
-              </Button>
-              <Button variant="primary" onClick={() => void run()} disabled={selected.length === 0}>
-                Run study
-              </Button>
-            </div>
+            <Button variant="primary" onClick={() => void run()} disabled={selected.length === 0}>
+              Run study
+            </Button>
           )
         }
       />
@@ -149,40 +139,6 @@ export function RunStudyPage() {
         <StudyProgressPanel />
 
         {runState.error && <Notice tone="error">{runState.error}</Notice>}
-
-        {preflightState.data && (
-          <Card
-            title="Data check"
-            subtitle="What is cached for this range, before committing to a run"
-          >
-            <div className="space-y-2">
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-                <StatTile label="Sessions" value={fmtInt(preflightState.data.sessions)} />
-                <StatTile
-                  label="Daily bars"
-                  value={fmtInt(preflightState.data.dailyBars)}
-                  tone={preflightState.data.dailyBars > 0 ? 'gain' : 'loss'}
-                  hint="needed for the EMA"
-                />
-                <StatTile
-                  label="Intraday sampled"
-                  value={`${preflightState.data.underlyingMinuteSessions}/10`}
-                  tone={preflightState.data.underlyingMinuteSessions > 0 ? 'gain' : 'warn'}
-                  hint="first ten sessions"
-                />
-              </div>
-              {preflightState.data.blockers.map((b) => (
-                <Notice key={b} tone="error">{b}</Notice>
-              ))}
-              {preflightState.data.warnings.map((w) => (
-                <Notice key={w} tone="warn">{w}</Notice>
-              ))}
-              {preflightState.data.blockers.length === 0 && (
-                <Notice tone="success">Nothing blocking. This range can produce entries.</Notice>
-              )}
-            </div>
-          </Card>
-        )}
 
         <div className="grid gap-4 lg:grid-cols-2">
           <Card title="Entry" subtitle="Signal, timing, and expiration targeting">

@@ -34,6 +34,7 @@ import { simulateAll } from './simulate.js'
 import { previousCompletedBar } from './indicators.js'
 import { buildManagementSet } from './managementSets.js'
 import { createLogger } from '../services/logger.js'
+import { studyWarmupStart } from './studyPreparation.js'
 
 const log = createLogger('study')
 
@@ -201,7 +202,7 @@ export async function runStudy(
    * entry. Without the lead-in the earliest trades would be skipped for want of
    * an indicator, quietly biasing the sample toward later dates.
    */
-  const warmupStart = shiftDays(config.from, -(config.entry.type === 'ema' ? config.entry.period * 4 : 10) - 30)
+  const warmupStart = studyWarmupStart(config)
   const dailyBars = await source.getDailyBars(indexTicker, warmupStart, config.to)
 
   const trades: TradeResult[] = []

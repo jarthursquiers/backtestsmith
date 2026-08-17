@@ -22,6 +22,7 @@ function humanDuration(ms: number | undefined): string {
 }
 
 const PHASE_LABEL: Record<StudyProgress['phase'], string> = {
+  preparing: 'Preparing data',
   preflight: 'Checking data',
   entries: 'Generating entries',
   saving: 'Saving',
@@ -52,7 +53,7 @@ export function StudyProgressPanel() {
 
   if (!progress) return null
 
-  const running = progress.phase === 'entries' || progress.phase === 'preflight'
+  const running = progress.phase === 'preparing' || progress.phase === 'entries' || progress.phase === 'preflight'
   const percent = progress.total > 0 ? (progress.completed / progress.total) * 100 : 0
   const sinceUpdate = Date.now() - lastUpdate.current
   const elapsed = (progress.elapsedMs ?? 0) + (running ? sinceUpdate : 0)
@@ -144,8 +145,8 @@ export function StudyProgressPanel() {
 
         {running && (
           <p className="text-[10px] leading-relaxed text-ink-faint">
-            Most of the elapsed time is the provider rate limit rather than computation, so long gaps between
-            session updates are expected. Progress is also written to the terminal, prefixed{' '}
+            Cached ranges are read locally; missing ranges are downloaded and verified automatically. Long gaps
+            can mean the provider queue is respecting a rate limit. Progress is also written to the terminal, prefixed{' '}
             <code className="num">[study]</code>.
           </p>
         )}
