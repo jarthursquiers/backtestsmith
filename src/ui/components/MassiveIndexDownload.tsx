@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { SchwabBackfillResult } from '../../shared/schwab.js'
-import { tradingDaysBetween } from '../../core/time/marketTime.js'
+import { previousTradingDay, tradingDaysBetween } from '../../core/time/marketTime.js'
 import { Button, Card, Field, Input, Notice, Select, Spinner, StatTile } from './primitives.js'
 import { fmtInt, shiftDate, todayEastern } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
@@ -8,15 +8,18 @@ import { useAsyncAction } from '../lib/hooks.js'
 /**
  * Downloads index history from Massive.
  *
- * Requires an Indices subscription, which is separate from Options. The free
- * Indices Basic tier includes minute aggregates but covers a limited set of
- * tickers, so whether SPX is available can only be settled by asking.
+ * Requires an Indices subscription, which is separate from Options. Indices
+ * Starter includes SPX minute aggregates and at least one year of history.
  */
 export function MassiveIndexDownload({ onDataChanged }: { onDataChanged: () => void }) {
+  // Starter is delayed, and downloading an in-progress session would make that
+  // partial day look complete in the coverage ledger. Default to the most
+  // recent session that is certainly complete; the fields remain editable.
+  const defaultTo = previousTradingDay(todayEastern())
   const [ticker, setTicker] = useState('I:SPX')
   const [timespan, setTimespan] = useState<'minute' | 'day'>('minute')
-  const [from, setFrom] = useState(shiftDate(todayEastern(), -365))
-  const [to, setTo] = useState(todayEastern())
+  const [from, setFrom] = useState(shiftDate(defaultTo, -365))
+  const [to, setTo] = useState(defaultTo)
   const [last, setLast] = useState<SchwabBackfillResult | null>(null)
 
   const [state, run] = useAsyncAction(async () => {
@@ -71,16 +74,16 @@ export function MassiveIndexDownload({ onDataChanged }: { onDataChanged: () => v
         {estimatedRequests !== null && !last && (
           <p className="text-[10px] leading-relaxed text-ink-faint">
             About {fmtInt(estimatedRequests)} requests for {fmtInt(expectedSessions ?? 0)} sessions, split into
-            ~21-session chunks. At 5 calls/minute that is roughly {Math.ceil(estimatedRequests / 5)} minutes.
-            Months already cached are skipped, so an interrupted download can simply be re-run.
+            ~21-session chunks. Indices Starter permits unlimited API calls. Sessions already cached are skipped,
+            so an interrupted download can simply be re-run.
           </p>
         )}
 
         {notEntitled && (
           <Notice tone="warn">
-            Massive rejected this as not entitled. Index data is a separate subscription from Options — the free
-            Indices Basic tier includes minute aggregates, but covers a limited set of tickers, so SPX may
-            require a paid indices tier. Nothing was cached, so retrying after subscribing costs nothing.
+            Massive rejected this as not entitled. Index data is a separate subscription from Options, and SPX
+            requires access to all index tickers (such as Indices Starter). Nothing was cached, so retrying after
+            correcting the subscription or API key costs nothing.
           </Notice>
         )}
 

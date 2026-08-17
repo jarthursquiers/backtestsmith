@@ -104,6 +104,21 @@ export async function preflightStudy(
     blockers.push(
       `Only ${dailyBars.length} daily bars are cached, but the ${period} EMA needs at least ${period + 1}.`
     )
+  } else if (sessions.length > 0) {
+    const sessionsWithPriorDailyBar = sessions.filter(
+      (date) => previousCompletedBar(dailyBars, date) !== null
+    ).length
+    if (sessionsWithPriorDailyBar === 0) {
+      blockers.push(
+        `${dailyBars.length} daily bars are cached for ${indexTicker}, but none is dated before the first ` +
+          `study session (${sessions[0]}). Every session would be skipped.`
+      )
+    } else if (sessionsWithPriorDailyBar < sessions.length) {
+      warnings.push(
+        `${sessions.length - sessionsWithPriorDailyBar} of ${sessions.length} sessions have no completed ` +
+          `daily ${indexTicker} bar before entry and will be skipped.`
+      )
+    }
   }
 
   if (underlyingMinuteSessions === 0) {

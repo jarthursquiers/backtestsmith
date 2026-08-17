@@ -320,6 +320,25 @@ describe('preflight', () => {
     expect(report.blockers[0]).toMatch(/needs at least 10/)
   })
 
+  it('blocks when cached daily bars cannot precede any study session', async () => {
+    const source = makeSource({
+      async getDailyBars() {
+        return Array.from({ length: 10 }, (_, i) => ({
+          ticker: 'I:SPX',
+          timestamp: easternToTimestamp(CONFIG.to, 16, i),
+          open: 6000,
+          high: 6000,
+          low: 6000,
+          close: 6000
+        }))
+      }
+    })
+
+    const report = await preflightStudy(CONFIG, source)
+    expect(report.blockers.join(' ')).toMatch(/none is dated before the first study session/)
+    expect(report.blockers.join(' ')).toContain('I:SPX')
+  })
+
   it('passes cleanly when the data is present', async () => {
     const report = await preflightStudy(CONFIG, makeSource({
       async getDailyBars(_t, from, to) {

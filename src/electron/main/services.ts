@@ -32,7 +32,7 @@ export interface AppServices {
   provider: OptionsHistoricalDataProvider
   /** The raw Massive provider, retained for connectivity checks and diagnostics. */
   upstream: MassiveProvider
-  /** Underlying/index history. Schwab supplies SPX, which Massive will not. */
+  /** Fallback source for underlying/index history when Massive is unavailable. */
   schwab: SchwabProvider
   schwabStore: SchwabStore
   schwabQueue: RequestQueue

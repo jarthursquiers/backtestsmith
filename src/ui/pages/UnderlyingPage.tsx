@@ -27,10 +27,9 @@ const SPX_TICKER = 'I:SPX'
 /**
  * SPX underlying history.
  *
- * Massive's Options plans do not include index data - `I:SPX` returns HTTP 403
- * "not entitled" - so CSV import is the primary acquisition path here rather
- * than a fallback. This screen owns that import and lets a session be charted
- * to confirm the data landed on the right timestamps.
+ * Massive's Options plans do not include index data, but a separate Indices
+ * Starter subscription provides `I:SPX` minute aggregates. This screen also
+ * owns fallback imports and lets a session be charted to confirm timestamps.
  */
 export function UnderlyingPage() {
   const [ticker, setTicker] = useState(SPX_TICKER)
@@ -99,9 +98,9 @@ export function UnderlyingPage() {
       <div className="flex-1 space-y-4 overflow-y-auto p-6">
         <Notice tone="info">
           Index data is a <strong>separate Massive subscription</strong> from options. Without it{' '}
-          <code className="num">I:SPX</code> returns HTTP 403 &ldquo;not entitled&rdquo;. Indices Basic is free
-          and includes minute aggregates, so adding it to the same account is usually the shortest path. Schwab
-          and CSV import remain available below.
+          <code className="num">I:SPX</code> returns HTTP 403 &ldquo;not entitled&rdquo;. Your $49 Indices Starter plan
+          includes all index tickers, minute aggregates, and at least one year of history. Schwab and CSV import
+          remain available below as fallbacks.
         </Notice>
 
         <MassiveIndexDownload onDataChanged={() => void refreshCoverage()} />

@@ -154,7 +154,7 @@ export function DataPage() {
 
           <Card
             title="Request pacing"
-            subtitle="The free Options Basic plan allows roughly 5 calls per minute. Raise this after upgrading."
+            subtitle="Set this to match the most restrictive Massive plan used by this app."
           >
             <div className="space-y-3">
               <Field
@@ -183,9 +183,9 @@ export function DataPage() {
               </div>
 
               <p className="text-[10px] leading-relaxed text-ink-faint">
-                5/min matches the free tier. 100/min or unlimited suits Options Starter and above. Exceeding the
-                real limit is handled gracefully — HTTP 429 responses are retried using the server&apos;s
-                Retry-After header.
+                5/min matches free tiers. The $49 Indices Starter endpoints are unlimited, but keep 5/min if the
+                same key also uses free-tier Options endpoints. HTTP 429 responses are retried using the
+                server&apos;s Retry-After header.
               </p>
             </div>
           </Card>

@@ -18,6 +18,12 @@ export function useAsyncAction<TArgs extends unknown[], TResult>(
 ): [AsyncState<TResult>, (...args: TArgs) => Promise<TResult | null>, () => void] {
   const [state, setState] = useState<AsyncState<TResult>>({ data: null, error: null, loading: false })
   const mounted = useRef(true)
+  // Most callers pass an inline async function. Keep the runner stable across
+  // renders while still invoking the newest function; otherwise effects that
+  // depend on `run` retrigger after every state update and can create an IPC
+  // reload/flicker loop.
+  const actionRef = useRef(action)
+  actionRef.current = action
 
   useEffect(() => {
     mounted.current = true
@@ -30,7 +36,7 @@ export function useAsyncAction<TArgs extends unknown[], TResult>(
     async (...args: TArgs): Promise<TResult | null> => {
       setState((s) => ({ ...s, loading: true, error: null }))
       try {
-        const data = await action(...args)
+        const data = await actionRef.current(...args)
         if (mounted.current) setState({ data, error: null, loading: false })
         return data
       } catch (error) {
@@ -39,7 +45,7 @@ export function useAsyncAction<TArgs extends unknown[], TResult>(
         return null
       }
     },
-    [action]
+    []
   )
 
   const reset = useCallback(() => setState({ data: null, error: null, loading: false }), [])
