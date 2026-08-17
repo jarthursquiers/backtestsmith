@@ -29,7 +29,17 @@ export type PlacementConfig =
  * exact assumptions that produced it.
  */
 export interface StudyConfig {
+  /** Option underlying root, e.g. SPX. Used for chain lookups. */
   underlying: string
+  /**
+   * Ticker the *index bars* are cached under, e.g. I:SPX.
+   *
+   * Separate from `underlying` because they genuinely differ: option chains are
+   * keyed by root while index history uses the `I:` prefix. Conflating them made
+   * a study look for SPX bars that were stored as I:SPX and skip every session.
+   * Defaults via `resolveIndexTicker`.
+   */
+  indexTicker?: string
   from: string
   to: string
   /** Eastern wall-clock entry time, HH:mm. */
@@ -152,4 +162,16 @@ export function normalizeSkipReason(reason: string): string {
     .replace(/\d+(\.\d+)?%/g, 'N%')
     .replace(/\b\d+(\.\d+)?\b/g, 'N')
     .trim()
+}
+
+/**
+ * The ticker index bars are stored under for a study.
+ *
+ * Defaults to the `I:` convention used by every download path, so a config that
+ * omits it still finds the data rather than silently matching nothing.
+ */
+export function resolveIndexTicker(config: Pick<StudyConfig, 'underlying' | 'indexTicker'>): string {
+  if (config.indexTicker && config.indexTicker.trim()) return config.indexTicker.trim().toUpperCase()
+  const root = config.underlying.trim().toUpperCase()
+  return root.startsWith('I:') ? root : `I:${root}`
 }

@@ -4,6 +4,7 @@ import type { ButterflySeries, MissingDataPolicy, PricingAssumptions } from '../
 import type { TradeResult } from '../shared/trade.js'
 import {
   normalizeSkipReason,
+  resolveIndexTicker,
   type StudyConfig,
   type StudyProgress,
   type SkippedEntry,
@@ -74,13 +75,14 @@ export async function preflightStudy(
   source: StudyDataSource
 ): Promise<StudyPreflight> {
   const sessions = tradingDaysBetween(config.from, config.to)
-  const dailyBars = await source.getDailyBars(config.underlying, shiftDays(config.from, -180), config.to)
+  const indexTicker = resolveIndexTicker(config)
+  const dailyBars = await source.getDailyBars(indexTicker, shiftDays(config.from, -180), config.to)
 
   // Sample the first few sessions rather than every one; the question is whether
   // intraday data exists at all, not exactly how much.
   let underlyingMinuteSessions = 0
   for (const date of sessions.slice(0, 10)) {
-    if ((await source.getUnderlyingMinutes(config.underlying, date)).length > 0) {
+    if ((await source.getUnderlyingMinutes(indexTicker, date)).length > 0) {
       underlyingMinuteSessions++
     }
   }
@@ -95,8 +97,8 @@ export async function preflightStudy(
 
   if (dailyBars.length === 0) {
     blockers.push(
-      `No daily ${config.underlying} bars are cached, so every session will be skipped for want of an ` +
-        'indicator. Download daily underlying history on the SPX Underlying screen first.'
+      `No daily bars are cached for ${indexTicker}, so every session will be skipped for want of an ` +
+        `indicator. Download daily history for ${indexTicker} on the SPX Underlying screen first.`
     )
   } else if (period > 0 && dailyBars.length < period + 1) {
     blockers.push(
@@ -106,8 +108,8 @@ export async function preflightStudy(
 
   if (underlyingMinuteSessions === 0) {
     warnings.push(
-      'No intraday underlying data is cached at the start of this range. The index level at entry will be ' +
-        'derived from put-call parity, and underlying-location rules such as centre touch cannot fire.'
+      `No intraday data is cached for ${indexTicker} at the start of this range. The index level at entry ` +
+        'will be derived from put-call parity, and underlying-location rules such as centre touch cannot fire.'
     )
   }
 
@@ -176,6 +178,8 @@ export async function runStudy(
 
   const entryTime = parseTimeOfDay(config.entryTime)
   const sessions = tradingDaysBetween(config.from, config.to)
+  // Index bars live under the I: convention while chains use the bare root.
+  const indexTicker = resolveIndexTicker(config)
 
   /*
    * Daily history starts well before the range so the EMA is warm on the first
@@ -183,7 +187,7 @@ export async function runStudy(
    * an indicator, quietly biasing the sample toward later dates.
    */
   const warmupStart = shiftDays(config.from, -(config.entry.type === 'ema' ? config.entry.period * 4 : 10) - 30)
-  const dailyBars = await source.getDailyBars(config.underlying, warmupStart, config.to)
+  const dailyBars = await source.getDailyBars(indexTicker, warmupStart, config.to)
 
   const trades: TradeResult[] = []
   const series: ButterflySeries[] = []
@@ -288,7 +292,7 @@ export async function runStudy(
     let underlyingAtEntry: number | undefined
     let expectedMove: number | null = null
 
-    const cachedMinutes = await source.getUnderlyingMinutes(config.underlying, entryDate)
+    const cachedMinutes = await source.getUnderlyingMinutes(indexTicker, entryDate)
     const exact = cachedMinutes.find((b) => Math.floor(b.timestamp / 60_000) * 60_000 === entryTimestamp)
     if (exact) underlyingAtEntry = exact.close
 
@@ -393,7 +397,7 @@ export async function runStudy(
       source.getOptionBars(definition.upperTicker, entryDate, choice.expiration)
     ])
 
-    const underlyingBars = await collectUnderlying(source, config.underlying, entryDate, choice.expiration)
+    const underlyingBars = await collectUnderlying(source, indexTicker, entryDate, choice.expiration)
 
     let reconstructed: ButterflySeries
     try {
