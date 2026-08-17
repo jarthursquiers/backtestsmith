@@ -9,7 +9,13 @@ import type {
 } from '../domain/butterfly.js'
 import { CONTRACT_MULTIPLIER, DEFAULT_PRICING } from '../domain/butterfly.js'
 import { dteAt } from '../core/time/dte.js'
-import { marketDateOf, sessionClose, sessionOpen, tradingDaysBetween } from '../core/time/marketTime.js'
+import {
+  marketDateOf,
+  sessionClose,
+  sessionOpen,
+  tradingDaysBetween,
+  type MarketDate
+} from '../core/time/marketTime.js'
 import {
   alignLegs,
   buildLegSeries,
@@ -53,10 +59,23 @@ export class ReconstructionError extends Error {
   }
 }
 
-/** Builds the regular-session minute grid between two instants, inclusive. */
-export function sessionMinuteGrid(fromTs: number, toTs: number): number[] {
+/** One grid minute, with the market date it belongs to already resolved. */
+export interface GridMinute {
+  timestamp: number
+  marketDate: MarketDate
+}
+
+/**
+ * Builds the regular-session minute grid between two instants, inclusive.
+ *
+ * Each minute carries its market date. The generator already knows it, and
+ * recovering it later would mean a timezone conversion per bar - which, at a few
+ * thousand bars per trade and hundreds of trades per study, is the difference
+ * between a study taking seconds and taking minutes.
+ */
+export function sessionMinuteGridDetailed(fromTs: number, toTs: number): GridMinute[] {
   if (toTs < fromTs) return []
-  const minutes: number[] = []
+  const minutes: GridMinute[] = []
   const dates = tradingDaysBetween(marketDateOf(fromTs), marketDateOf(toTs))
 
   for (const date of dates) {
@@ -67,9 +86,14 @@ export function sessionMinuteGrid(fromTs: number, toTs: number): number[] {
     // sessionMinuteCount. Including it would make a full session 391 minutes
     // and quietly inflate every coverage denominator.
     const end = Math.min(close - 60_000, toTs)
-    for (let t = start; t <= end; t += 60_000) minutes.push(t)
+    for (let t = start; t <= end; t += 60_000) minutes.push({ timestamp: t, marketDate: date })
   }
   return minutes
+}
+
+/** Timestamps only, for callers that do not need the dates. */
+export function sessionMinuteGrid(fromTs: number, toTs: number): number[] {
+  return sessionMinuteGridDetailed(fromTs, toTs).map((m) => m.timestamp)
 }
 
 export function reconstructButterfly(input: ReconstructInput): ButterflySeries {
@@ -94,14 +118,29 @@ export function reconstructButterfly(input: ReconstructInput): ButterflySeries {
     }
   }
 
-  const grid = sessionMinuteGrid(entryTimestamp, exitTimestamp)
+  const grid = sessionMinuteGridDetailed(entryTimestamp, exitTimestamp)
   if (grid.length === 0) {
     throw new ReconstructionError(
       `No regular-session minutes between ${new Date(entryTimestamp).toISOString()} and ${new Date(exitTimestamp).toISOString()}`
     )
   }
 
-  const aligned = alignLegs(grid, legs, pricing.model, pricing.missingData)
+  const aligned = alignLegs(grid.map((m) => m.timestamp), legs, pricing.model, pricing.missingData)
+
+  /*
+   * Calendar and trading DTE are constant within a session, so they are computed
+   * once per market date rather than once per minute. That single change is
+   * worth roughly an order of magnitude on a full study.
+   */
+  const dteByDate = new Map<MarketDate, { calendarDte: number; tradingDte: number }>()
+  for (const { marketDate } of grid) {
+    if (dteByDate.has(marketDate)) continue
+    const breakdown = dteAt(sessionOpen(marketDate), definition.expiration)
+    dteByDate.set(marketDate, {
+      calendarDte: breakdown.calendarDte,
+      tradingDte: breakdown.tradingDte
+    })
+  }
 
   // The entry debit comes from the first minute that can be priced at or after
   // entry. Nothing later than that is used to establish it.
@@ -151,7 +190,7 @@ export function reconstructButterfly(input: ReconstructInput): ButterflySeries {
     const pnlDollars = (value - entryDebit) * CONTRACT_MULTIPLIER * definition.quantity
     const pnlPct = entryDebit > 0 ? ((value - entryDebit) / entryDebit) * 100 : 0
 
-    const dte = dteAt(point.minute, definition.expiration)
+    const dte = dteByDate.get(grid[i]!.marketDate)!
     const underlyingPrice = underlyingIndex.get(point.minute)?.close
 
     const observation: ButterflyObservation = {

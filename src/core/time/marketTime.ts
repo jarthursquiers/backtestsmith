@@ -78,15 +78,23 @@ export function parseTimeOfDay(value: string): { hour: number; minute: number; s
 
 /** Session open timestamp (9:30 AM ET) for a market date. */
 export function sessionOpen(date: MarketDate): number {
-  return easternToTimestamp(date, SESSION_OPEN.hour, SESSION_OPEN.minute)
+  const cached = sessionOpenCache.get(date)
+  if (cached !== undefined) return cached
+  const value = easternToTimestamp(date, SESSION_OPEN.hour, SESSION_OPEN.minute)
+  sessionOpenCache.set(date, value)
+  return value
 }
 
 /**
  * Session close timestamp for a market date, honoring 1:00 PM ET half sessions.
  */
 export function sessionClose(date: MarketDate): number {
+  const cached = sessionCloseCache.get(date)
+  if (cached !== undefined) return cached
   const close = isEarlyCloseDay(date) ? EARLY_SESSION_CLOSE : SESSION_CLOSE
-  return easternToTimestamp(date, close.hour, close.minute)
+  const value = easternToTimestamp(date, close.hour, close.minute)
+  sessionCloseCache.set(date, value)
+  return value
 }
 
 /** True when the timestamp falls inside the regular session for its own market date. */
@@ -102,6 +110,16 @@ export function sessionMinuteCount(date: MarketDate): number {
   return Math.round((sessionClose(date) - sessionOpen(date)) / 60000)
 }
 
+/*
+ * These are pure functions of a market date, and the backtest engine calls them
+ * on the order of a million times per study. Memoizing turns each into a map
+ * lookup; the cache holds one small entry per distinct date, so a multi-year
+ * study costs a few thousand entries.
+ */
+const tradingDayCache = new Map<MarketDate, boolean>()
+const sessionOpenCache = new Map<MarketDate, number>()
+const sessionCloseCache = new Map<MarketDate, number>()
+
 export function isWeekend(date: MarketDate): boolean {
   assertMarketDate(date)
   const dow = DateTime.fromISO(date, { zone: MARKET_ZONE }).weekday // 1=Mon..7=Sun
@@ -110,8 +128,12 @@ export function isWeekend(date: MarketDate): boolean {
 
 /** A trading day is a weekday that is not a full-day market holiday. */
 export function isTradingDay(date: MarketDate): boolean {
+  const cached = tradingDayCache.get(date)
+  if (cached !== undefined) return cached
   assertMarketDate(date)
-  return !isWeekend(date) && !isMarketHoliday(date)
+  const result = !isWeekend(date) && !isMarketHoliday(date)
+  tradingDayCache.set(date, result)
+  return result
 }
 
 export function addCalendarDays(date: MarketDate, days: number): MarketDate {
