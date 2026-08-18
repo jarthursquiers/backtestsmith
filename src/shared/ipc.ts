@@ -1,7 +1,7 @@
 import type { BarQuery, OptionBar, UnderlyingBar } from '../domain/bars.js'
 import type { ContractQuery, OptionContract } from '../domain/contracts.js'
 import type { BarFetchResult, ProviderStatus } from './provider.js'
-import type { CacheStats } from './cache.js'
+import type { CacheStats, DatabaseBackupResult } from './cache.js'
 import type { SchwabBackfillRequest, SchwabBackfillResult, SchwabConnectionStatus } from './schwab.js'
 import type { ChainSummary, ReconstructRequest, ReconstructResponse } from './butterfly.js'
 import type { ParityValidationRequest, ParityValidationResponse } from './parity.js'
@@ -100,6 +100,7 @@ export const IPC = {
 
   cacheStats: 'cache:stats',
   cacheClear: 'cache:clear',
+  databaseBackup: 'database:backup',
 
   queueStats: 'queue:stats',
   queuePause: 'queue:pause',
@@ -237,6 +238,10 @@ export interface AppApi {
     stats(): Promise<CacheStats>
     /** Wipes cached market data. Schema is preserved. */
     clear(): Promise<CacheStats>
+  }
+  database: {
+    /** Creates and verifies a standalone DuckDB file at a user-selected path. */
+    backup(): Promise<DatabaseBackupResult | null>
   }
   queue: {
     stats(): Promise<QueueStats>

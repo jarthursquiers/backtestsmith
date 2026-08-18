@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from 'node:fs'
-import { basename } from 'node:path'
+import { basename, join } from 'node:path'
 import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron'
 import { createHash, randomBytes } from 'node:crypto'
 import {
@@ -85,6 +85,7 @@ import type {
 import type { ForwardTestRecord } from '../../database/forwardTestStore.js'
 import type { TradeResult } from '../../shared/trade.js'
 import { planForwardRange } from '../../backtest/forwardTest.js'
+import type { DatabaseBackupResult } from '../../shared/cache.js'
 
 const log = createLogger('ipc')
 
@@ -1240,6 +1241,25 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   handle(IPC.cacheClear, async () => {
     await services.store.clear()
     return services.cacheStats()
+  })
+
+  handle(IPC.databaseBackup, async (): Promise<DatabaseBackupResult | null> => {
+    if (activeStudy) throw new Error('Wait for the running study to finish before creating a backup.')
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z').replace('T', '-')
+    const backupDialogOptions = {
+      title: 'Back up all Backtestsmith data',
+      defaultPath: join(app.getPath('documents'), `backtestsmith-data-${stamp}.duckdb`),
+      filters: [{ name: 'DuckDB database', extensions: ['duckdb'] }],
+      properties: ['createDirectory', 'showOverwriteConfirmation']
+    } satisfies Electron.SaveDialogOptions
+    const window = getWindow()
+    const result = window
+      ? await dialog.showSaveDialog(window, backupDialogOptions)
+      : await dialog.showSaveDialog(backupDialogOptions)
+    if (result.canceled || !result.filePath) return null
+    const backup = await services.database.backupTo(result.filePath)
+    shell.showItemInFolder(backup.path)
+    return backup
   })
 
   // --- queue ----------------------------------------------------------------

@@ -1,8 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { mkdirSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { createHash } from 'node:crypto'
 import { DuckDBConnection, DuckDBInstance } from '@duckdb/node-api'
 import { createLogger } from '../services/logger.js'
+import type { DatabaseBackupResult } from '../shared/cache.js'
 
 const log = createLogger('database')
 
@@ -473,6 +475,69 @@ export class Database {
   }
 
   /**
+   * Creates a standalone, internally consistent copy while this database stays
+   * open. DuckDB performs the copy through its own connection, so Windows file
+   * locks and an outstanding WAL cannot produce a half-backup.
+   */
+  async backupTo(destination: string): Promise<DatabaseBackupResult> {
+    if (this.filePath === ':memory:') throw new Error('An in-memory database cannot be backed up this way.')
+    if (!destination.trim()) throw new Error('Choose a backup destination.')
+
+    const partial = `${destination}.partial`
+    if (existsSync(partial)) rmSync(partial, { force: true })
+    if (existsSync(`${partial}.wal`)) rmSync(`${partial}.wal`, { force: true })
+    mkdirSync(dirname(destination), { recursive: true })
+
+    try {
+      await this.serialize(async () => {
+        const conn = this.conn()
+        await conn.run('CHECKPOINT')
+        const reader = await conn.runAndReadAll('SELECT current_database() AS name')
+        const sourceName = String(reader.getRowObjects()[0]?.name ?? '')
+        if (!sourceName) throw new Error('Could not identify the live DuckDB catalog.')
+        const quotedSource = `"${sourceName.replaceAll('"', '""')}"`
+        const quotedDestination = `'${partial.replaceAll("'", "''")}'`
+
+        await conn.run(`ATTACH ${quotedDestination} AS bts_backup`)
+        try {
+          await conn.run(`COPY FROM DATABASE ${quotedSource} TO bts_backup`)
+        } finally {
+          await conn.run('DETACH bts_backup')
+        }
+      })
+
+      const verification = await inspectDatabaseFile(partial)
+      const sha256 = await sha256File(partial)
+      if (existsSync(destination)) rmSync(destination, { force: true })
+      renameSync(partial, destination)
+
+      const result: DatabaseBackupResult = {
+        path: destination,
+        manifestPath: `${destination}.manifest.json`,
+        createdAt: Date.now(),
+        bytes: statSync(destination).size,
+        sha256,
+        ...verification
+      }
+      writeFileSync(
+        result.manifestPath,
+        JSON.stringify({
+          ...result,
+          format: 'Backtestsmith verified DuckDB backup',
+          note: 'The SHA-256 applies to the adjacent .duckdb file. API keys and broker credentials are not included.'
+        }, null, 2),
+        'utf8'
+      )
+      log.info('database backup verified', { ...result })
+      return result
+    } catch (error) {
+      if (existsSync(partial)) rmSync(partial, { force: true })
+      if (existsSync(`${partial}.wal`)) rmSync(`${partial}.wal`, { force: true })
+      throw error
+    }
+  }
+
+  /**
    * Closes the connection and the instance.
    *
    * Both are required: the instance owns the file handle, so dropping only the
@@ -485,5 +550,75 @@ export class Database {
     this.instance?.closeSync()
     this.instance = null
     log.info('database closed')
+  }
+}
+
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash('sha256')
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(path)
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.on('end', resolve)
+    stream.on('error', reject)
+  })
+  return hash.digest('hex')
+}
+
+async function inspectDatabaseFile(path: string): Promise<Omit<DatabaseBackupResult, 'path' | 'manifestPath' | 'createdAt' | 'bytes' | 'sha256'>> {
+  const instance = await DuckDBInstance.create(path)
+  const connection = await instance.connect()
+  try {
+    const reader = await connection.runAndReadAll(`
+      WITH referenced AS (
+        SELECT DISTINCT json_extract_string(payload_json, '$.definition.lowerTicker') AS ticker FROM study_trades
+        UNION
+        SELECT DISTINCT json_extract_string(payload_json, '$.definition.centerTicker') AS ticker FROM study_trades
+        UNION
+        SELECT DISTINCT json_extract_string(payload_json, '$.definition.upperTicker') AS ticker FROM study_trades
+      )
+      SELECT
+        (SELECT count(*) FROM option_contracts) AS option_contracts,
+        (SELECT count(*) FROM option_bars) AS option_bars,
+        (SELECT count(*) FROM underlying_bars) AS underlying_bars,
+        (SELECT count(*) FROM bar_coverage WHERE kind = 'option') AS covered_option_days,
+        (SELECT min(market_date) FROM option_bars) AS option_earliest_date,
+        (SELECT max(market_date) FROM option_bars) AS option_latest_date,
+        (SELECT min(market_date) FROM underlying_bars) AS underlying_earliest_date,
+        (SELECT max(market_date) FROM underlying_bars) AS underlying_latest_date,
+        (SELECT count(*) FROM study_runs) AS study_runs,
+        (SELECT count(*) FROM forward_tests) AS forward_tests,
+        (SELECT min(json_extract_string(config_json, '$.from')) FROM study_runs) AS study_earliest_date,
+        (SELECT max(json_extract_string(config_json, '$.to')) FROM study_runs) AS study_latest_date,
+        (SELECT count(*) FROM referenced WHERE ticker IS NOT NULL) AS referenced_option_tickers,
+        (SELECT count(*) FROM referenced r
+          WHERE r.ticker IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM option_contracts c WHERE c.ticker = r.ticker)) AS missing_contracts,
+        (SELECT count(*) FROM referenced r
+          WHERE r.ticker IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM option_bars b WHERE b.ticker = r.ticker)) AS missing_bars
+    `)
+    const row = reader.getRowObjects()[0]!
+    const number = (value: unknown): number => Number(value ?? 0)
+    const nullable = (value: unknown): string | null => value === null || value === undefined ? null : String(value)
+    return {
+      optionContracts: number(row.option_contracts),
+      optionBars: number(row.option_bars),
+      underlyingBars: number(row.underlying_bars),
+      coveredOptionDays: number(row.covered_option_days),
+      optionEarliestDate: nullable(row.option_earliest_date),
+      optionLatestDate: nullable(row.option_latest_date),
+      underlyingEarliestDate: nullable(row.underlying_earliest_date),
+      underlyingLatestDate: nullable(row.underlying_latest_date),
+      studyRuns: number(row.study_runs),
+      forwardTests: number(row.forward_tests),
+      studyEarliestDate: nullable(row.study_earliest_date),
+      studyLatestDate: nullable(row.study_latest_date),
+      referencedOptionTickers: number(row.referenced_option_tickers),
+      referencedTickersMissingContracts: number(row.missing_contracts),
+      referencedTickersMissingBars: number(row.missing_bars)
+    }
+  } finally {
+    connection.closeSync()
+    instance.closeSync()
   }
 }

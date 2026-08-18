@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { AppInfo } from '../../shared/ipc.js'
 import type { Settings } from '../../shared/settings.js'
-import { Button, Card, Field, Input, Notice, PageHeader, Select } from '../components/primitives.js'
+import type { DatabaseBackupResult } from '../../shared/cache.js'
+import { Button, Card, Field, Input, Notice, PageHeader, Select, Spinner } from '../components/primitives.js'
+import { fmtBytes, fmtInt } from '../lib/format.js'
 
 export function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [saved, setSaved] = useState(false)
+  const [backup, setBackup] = useState<DatabaseBackupResult | null>(null)
+  const [backupError, setBackupError] = useState<string | null>(null)
+  const [backingUp, setBackingUp] = useState(false)
 
   const load = useCallback(async () => {
     const [current, appInfo] = await Promise.all([window.api.settings.get(), window.api.app.info()])
@@ -27,6 +32,19 @@ export function SettingsPage() {
 
   const reset = async (): Promise<void> => {
     setSettings(await window.api.settings.reset())
+  }
+
+  const backupDatabase = async (): Promise<void> => {
+    setBackingUp(true)
+    setBackupError(null)
+    try {
+      const result = await window.api.database.backup()
+      if (result) setBackup(result)
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBackingUp(false)
+    }
   }
 
   if (!settings) return null
@@ -144,9 +162,40 @@ export function SettingsPage() {
                 />
               </Field>
               <Notice tone="info">
-                The Massive API key is stored separately and encrypted with the OS keystore. It is never written
-                to settings.json.
+                A database backup contains cached option contracts, option minute bars, SPX underlying bars,
+                coverage records, saved studies, and forward tests. API keys and broker credentials remain
+                separately encrypted and are intentionally excluded.
               </Notice>
+              <Button variant="primary" disabled={backingUp} onClick={() => void backupDatabase()}>
+                {backingUp && <Spinner />} Create verified database backup...
+              </Button>
+              <p className="text-[10px] leading-relaxed text-ink-faint">
+                Choose your Google Drive folder in the save dialog. The app creates a standalone DuckDB file,
+                reopens it independently, verifies table counts, and calculates a SHA-256 checksum before reporting success.
+              </p>
+              {backupError && <Notice tone="error">{backupError}</Notice>}
+              {backup && (
+                <Notice tone={backup.referencedTickersMissingContracts === 0 && backup.referencedTickersMissingBars === 0 ? 'success' : 'warn'}>
+                  <div className="font-medium">Verified backup created</div>
+                  <div className="mt-1 break-all num">{backup.path}</div>
+                  <div className="mt-1 break-all num text-[9px]">Manifest: {backup.manifestPath}</div>
+                  <div className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <span>{fmtBytes(backup.bytes)} database file</span>
+                    <span>{fmtInt(backup.optionContracts)} option contracts</span>
+                    <span>{fmtInt(backup.optionBars)} option minute bars</span>
+                    <span>{fmtInt(backup.underlyingBars)} underlying bars</span>
+                    <span>Options: {backup.optionEarliestDate ?? '—'} to {backup.optionLatestDate ?? '—'}</span>
+                    <span>Underlying: {backup.underlyingEarliestDate ?? '—'} to {backup.underlyingLatestDate ?? '—'}</span>
+                    <span>{fmtInt(backup.studyRuns)} saved studies</span>
+                    <span>{fmtInt(backup.forwardTests)} forward tests</span>
+                    <span>Study dates: {backup.studyEarliestDate ?? '—'} to {backup.studyLatestDate ?? '—'}</span>
+                    <span>{fmtInt(backup.referencedOptionTickers)} study-referenced option tickers</span>
+                    <span>{fmtInt(backup.referencedTickersMissingContracts)} referenced contracts missing</span>
+                    <span>{fmtInt(backup.referencedTickersMissingBars)} referenced bar series missing</span>
+                  </div>
+                  <div className="mt-2 break-all num text-[9px]">SHA-256: {backup.sha256}</div>
+                </Notice>
+              )}
             </div>
           </Card>
         </div>

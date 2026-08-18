@@ -103,6 +103,9 @@ const api: AppApi = {
     stats: () => invoke(IPC.cacheStats),
     clear: () => invoke(IPC.cacheClear)
   },
+  database: {
+    backup: () => invoke(IPC.databaseBackup)
+  },
   queue: {
     stats: () => invoke(IPC.queueStats),
     pause: () => invoke(IPC.queuePause),
