@@ -22,12 +22,37 @@ export type EntryConfig =
       meanReversionOverride?: boolean
     }
   | { type: 'fixed'; direction: 'bullish' | 'bearish' }
+  | {
+      /**
+       * Opening range breakout. Both the direction and the entry minute come
+       * from the first confirmation candle to close outside the range, so this
+       * entry ignores `entryTime` beyond using it as a nominal display value.
+       */
+      type: 'orb'
+      openingRangeMinutes: number
+      confirmationMinutes: number
+      /** Latest Eastern wall-clock time a breakout may be confirmed, HH:mm. */
+      cutoffTime: string
+      /** Trades against the breakout rather than with it. */
+      invert?: boolean
+    }
+
+/**
+ * How an expected-move placement snaps to listed strikes.
+ *
+ * The two are genuinely different structures. `nearestCenter` rounds the centre
+ * to the closest strike, which can leave the near wing a few points inside the
+ * expected move. `nearWingOutside` snaps the near wing itself to the first
+ * listed strike at or beyond the expected move, so the wing is never inside it -
+ * which is what "the near wing just touches the expected move line" means.
+ */
+export type ExpectedMoveAnchor = 'nearestCenter' | 'nearWingOutside'
 
 /** Where the butterfly is centred. */
 export type PlacementConfig =
   | { type: 'fixedDistance'; offsetPoints: number }
   | { type: 'wingWidths'; wingsAway: number }
-  | { type: 'expectedMove'; buffer?: number }
+  | { type: 'expectedMove'; buffer?: number; anchor?: ExpectedMoveAnchor }
 
 /**
  * A complete, reproducible study definition.
@@ -67,6 +92,15 @@ export interface StudyConfig {
   targetDte: number
   expirationRule: ExpirationRule
   maxDeviation?: number
+  /**
+   * Weekdays (1 = Monday .. 5 = Friday) that may list an expiration.
+   *
+   * SPX weeklies were Monday/Wednesday/Friday for most of the history this app
+   * studies, and probing every weekday costs a chain request per day per
+   * session. Daily-expiry studies need the full week, so the set is explicit
+   * rather than assumed. Defaults via `resolveExpirationWeekdays`.
+   */
+  expirationWeekdays?: number[]
   /** Disambiguates SPX from SPXW where both list a strike. */
   preferredRoot?: string
 
@@ -85,6 +119,21 @@ export interface StudyConfig {
   minimumCoverage: number
   /** Management method ids applied to every entry. */
   managements: string[]
+
+  /** Refuse every provider fallback and prove that this run is fully reproducible offline. */
+  offlineOnly?: boolean
+
+  /**
+   * The named strategy this configuration was generated from, when one was.
+   *
+   * Provenance only: the engine reads the resolved fields above, never this. It
+   * exists so a stored run can say which strategy produced it and reopen with
+   * the same form filled in, rather than leaving a reader to infer the intent
+   * from a scattering of numbers.
+   */
+  strategyId?: string
+  /** The parameter values the named strategy was built from. */
+  strategyParams?: Record<string, string | number | boolean>
 }
 
 export interface SkippedEntry {
@@ -198,4 +247,26 @@ export function resolveIndexTicker(config: Pick<StudyConfig, 'underlying' | 'ind
   if (config.indexTicker && config.indexTicker.trim()) return config.indexTicker.trim().toUpperCase()
   const root = config.underlying.trim().toUpperCase()
   return root.startsWith('I:') ? root : `I:${root}`
+}
+
+/** True when a study trades the session it enters on. */
+export function isZeroDteStudy(config: Pick<StudyConfig, 'targetDte'>): boolean {
+  return config.targetDte === 0
+}
+
+/**
+ * Weekdays worth probing for a listed expiration.
+ *
+ * A 0DTE study must consider every weekday, since the expiration it needs is
+ * whichever day it happens to be. Longer-dated studies keep the historic
+ * Monday/Wednesday/Friday set, which is three chain requests per session
+ * instead of five.
+ */
+export function resolveExpirationWeekdays(
+  config: Pick<StudyConfig, 'targetDte' | 'expirationWeekdays'>
+): number[] {
+  if (config.expirationWeekdays && config.expirationWeekdays.length > 0) {
+    return [...config.expirationWeekdays]
+  }
+  return isZeroDteStudy(config) ? [1, 2, 3, 4, 5] : [1, 3, 5]
 }

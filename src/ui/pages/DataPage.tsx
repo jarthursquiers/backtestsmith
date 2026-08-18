@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { SecretStatus } from '../../shared/secrets.js'
 import type { Settings } from '../../shared/settings.js'
+import type { OptionArchiveProgress } from '../../shared/optionArchive.js'
 import {
   Badge,
   Button,
@@ -22,6 +23,9 @@ export function DataPage() {
   const [thetaKeyInput, setThetaKeyInput] = useState('')
   const [thetaStatus, setThetaStatus] = useState<SecretStatus | null>(null)
   const [thetaMessage, setThetaMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const [archiveFrom, setArchiveFrom] = useState('2025-08-19')
+  const [archiveTo, setArchiveTo] = useState('2026-08-10')
+  const [archiveProgress, setArchiveProgress] = useState<OptionArchiveProgress | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saveMessage, setSaveMessage] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -31,20 +35,31 @@ export function DataPage() {
   const [confirmClear, setConfirmClear] = useState(false)
 
   const refresh = useCallback(async () => {
-    const [status, theta, current] = await Promise.all([
-      window.api.secrets.status(), window.api.theta.status(), window.api.settings.get()
+    const [status, theta, current, archive] = await Promise.all([
+      window.api.secrets.status(), window.api.theta.status(), window.api.settings.get(),
+      window.api.theta.archiveStatus()
     ])
     setSecretStatus(status)
     setThetaStatus(theta)
     setSettings(current)
+    setArchiveProgress(archive.progress)
   }, [])
 
   useEffect(() => {
     void refresh()
   }, [refresh])
 
+  useEffect(() => window.api.theta.onArchiveProgress(setArchiveProgress), [])
+
   const [testState, runTest] = useAsyncAction(() => window.api.massive.testConnection())
   const [thetaTest, runThetaTest] = useAsyncAction(() => window.api.theta.testConnection())
+  const [archiveState, runArchive] = useAsyncAction(async () => {
+    const result = await window.api.theta.archive({
+      underlying: 'SPX', from: archiveFrom, to: archiveTo, maxDte: 60
+    })
+    await refreshCache()
+    return result
+  })
 
   const saveKey = async (): Promise<void> => {
     const result = await window.api.secrets.setApiKey(keyInput)
@@ -79,6 +94,8 @@ export function DataPage() {
 
   const envManaged = secretStatus?.source === 'env'
   const unlimited = stats !== null && !Number.isFinite(stats.requestsPerMinute)
+  const archiveRunning = archiveProgress !== null &&
+    ['discovering', 'cataloging', 'downloading'].includes(archiveProgress.phase)
 
   return (
     <>
@@ -130,6 +147,82 @@ export function DataPage() {
             <p className="text-[10px] leading-relaxed text-ink-faint">
               Run Study gets option roots, strikes, contracts, and missing NBBO quotes from ThetaData automatically. Massive is used only for your cached SPX cash-index history.
             </p>
+
+            <div className="border-t border-line pt-3">
+              <div className="mb-2 text-[12px] font-medium text-ink">Archive SPX options for offline research</div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <Field label="Entry range from">
+                  <Input type="date" value={archiveFrom} disabled={archiveRunning} onChange={(event) => setArchiveFrom(event.target.value)} />
+                </Field>
+                <Field label="Entry range to">
+                  <Input type="date" value={archiveTo} disabled={archiveRunning} onChange={(event) => setArchiveTo(event.target.value)} />
+                </Field>
+                <Field label="DTE envelope" hint="Calendar days">
+                  <Input value="0–60 DTE" disabled />
+                </Field>
+              </div>
+
+              <Notice tone="warn">
+                This catalogs every listed SPX/SPXW call and put, then downloads every one-minute NBBO
+                contract-day usable by a 0–60 DTE entry in the range. The universe can be extremely large;
+                progress is resumable. Pause keeps every completed root/expiration/session block; Resume checks
+                DuckDB first and requests only blocks whose ThetaData NBBO coverage is missing.
+              </Notice>
+
+              <div className="mt-3 flex items-center gap-2">
+                {archiveRunning ? (
+                  <Button variant="danger" onClick={() => void window.api.theta.cancelArchive()}>Pause archive</Button>
+                ) : (
+                  <Button
+                    variant="primary"
+                    onClick={() => void runArchive()}
+                    disabled={!thetaStatus?.present || !archiveFrom || !archiveTo || archiveFrom > archiveTo}
+                  >
+                    {archiveProgress?.phase === 'paused' ? 'Resume archive' : 'Archive 0–60 DTE'}
+                  </Button>
+                )}
+                {archiveProgress && (
+                  <Badge tone={archiveProgress.phase === 'failed' ? 'loss' : archiveProgress.phase === 'done' ? 'gain' : 'accent'}>
+                    {archiveProgress.phase}
+                  </Badge>
+                )}
+              </div>
+
+              {archiveState.error && <div className="mt-3"><Notice tone="error">{archiveState.error}</Notice></div>}
+              {archiveProgress && (
+                <div className="mt-3 space-y-2 rounded-md border border-line bg-ground p-3">
+                  <div className="flex justify-between gap-3 text-[11px] text-ink-dim">
+                    <span>{archiveProgress.stage}</span>
+                    <span className="num">
+                      {fmtInt(archiveProgress.completed)} / {fmtInt(archiveProgress.total)}
+                    </span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-line">
+                    <div
+                      className="h-full bg-accent"
+                      style={{
+                        width: `${archiveProgress.total > 0
+                          ? Math.min(100, archiveProgress.completed / archiveProgress.total * 100)
+                          : 0}%`
+                      }}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+                    <StatTile label="Expirations" value={fmtInt(archiveProgress.expirations)} />
+                    <StatTile label="Contracts" value={fmtInt(archiveProgress.contracts)} />
+                    <StatTile label="Already cached" value={fmtInt(archiveProgress.cachedContractDays)} />
+                    <StatTile label="Downloaded now" value={fmtInt(archiveProgress.downloadedContractDays)} />
+                    <StatTile
+                      label="Remaining"
+                      value={fmtInt(Math.max(0, archiveProgress.total - archiveProgress.completed))}
+                      hint={`${fmtInt(archiveProgress.contractDays)} total`}
+                    />
+                    <StatTile label="API requests" value={fmtInt(archiveProgress.apiRequests)} />
+                  </div>
+                  {archiveProgress.error && <Notice tone="error">{archiveProgress.error}</Notice>}
+                </div>
+              )}
+            </div>
           </div>
         </Card>
 
@@ -293,7 +386,7 @@ export function DataPage() {
         <div className="grid gap-4 lg:grid-cols-2">
           <Card
             title="Local cache"
-            subtitle="Downloaded data is stored in DuckDB and reused indefinitely. Massive is called only for ranges the cache has never been asked about."
+            subtitle="Downloaded data is stored in DuckDB and reused indefinitely. Providers are called only for missing coverage."
             actions={
               confirmClear ? (
                 <div className="flex gap-2">
@@ -363,7 +456,7 @@ export function DataPage() {
               )}
 
               <p className="text-[10px] leading-relaxed text-ink-faint">
-                A day recorded as <em>confirmed empty</em> is one Massive was asked about and returned no bars
+                A day recorded as <em>confirmed empty</em> is one a provider was asked about and returned no bars
                 for. That is tracked deliberately, so a contract that did not trade is never re-requested.
               </p>
             </div>

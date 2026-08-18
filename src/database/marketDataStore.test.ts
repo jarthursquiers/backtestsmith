@@ -107,6 +107,26 @@ describe('MarketDataStore persistence', () => {
     await db.close()
   })
 
+  it('bulk-archives a full expiration day including contracts with no quotes', async () => {
+    const db = new Database(':memory:')
+    await db.open()
+    const store = new MarketDataStore(db)
+    const emptyTicker = 'O:SPXW250620C05875000'
+    const contracts: OptionContract[] = [
+      { ticker: TICKER, underlying: 'SPX', expirationDate: '2025-06-20', strike: 5875, type: 'put', root: 'SPXW' },
+      { ticker: emptyTicker, underlying: 'SPX', expirationDate: '2025-06-20', strike: 5875, type: 'call', root: 'SPXW' }
+    ]
+
+    await store.putOptionArchiveDay(contracts, '2025-06-17', [bar('2025-06-17', 9, 35, 2.2)], 'thetadata-nbbo')
+
+    expect(await store.hasOptionArchiveCoverage(contracts, '2025-06-17', 'thetadata-nbbo')).toBe(true)
+    expect((await store.getBarCoverage(TICKER, ['2025-06-17'], SHAPE)).get('2025-06-17')?.barCount).toBe(1)
+    expect((await store.getBarCoverage(emptyTicker, ['2025-06-17'], SHAPE)).get('2025-06-17')?.barCount).toBe(0)
+    expect(await store.hasOptionArchiveCoverage(contracts, '2025-06-18', 'thetadata-nbbo')).toBe(false)
+
+    await db.close()
+  })
+
   it('files bars under the Eastern market date, not the UTC date', async () => {
     const db = new Database(':memory:')
     await db.open()

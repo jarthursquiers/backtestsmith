@@ -9,6 +9,7 @@ import { createLogger } from '../../services/logger.js'
 import { ThetaDataClient } from './client.js'
 
 const log = createLogger('thetadata.provider')
+export const THETADATA_OPTION_SOURCE = 'thetadata-nbbo'
 
 interface ThetaQuote {
   timestamp: string
@@ -16,6 +17,11 @@ interface ThetaQuote {
   ask: number
   bid_size?: number
   ask_size?: number
+}
+
+interface ThetaArchiveQuote extends ThetaQuote {
+  strike: number
+  right: string
 }
 
 /** Uses ThetaData for every option capability and Massive only for the cash index. */
@@ -29,7 +35,56 @@ export class ThetaHybridProvider implements OptionsHistoricalDataProvider, Provi
   ) {}
 
   sourceId(capability: 'contracts' | 'option' | 'underlying'): string {
-    return capability === 'underlying' ? this.massive.id : capability === 'option' ? 'thetadata-nbbo' : 'thetadata'
+    return capability === 'underlying' ? this.massive.id : capability === 'option' ? THETADATA_OPTION_SOURCE : 'thetadata'
+  }
+
+  async listExpirations(underlying: string, signal?: AbortSignal): Promise<string[]> {
+    return this.theta.request<string[]>('expirations', { underlying }, signal)
+  }
+
+  /** One root/expiration/session request for the full chain, used by archival backfills. */
+  async getOptionArchiveDay(
+    root: string,
+    expiration: string,
+    date: string,
+    signal?: AbortSignal
+  ): Promise<OptionBar[]> {
+    const rows = await this.theta.request<ThetaArchiveQuote[]>('archive_quotes', {
+      symbol: root,
+      expiration,
+      date
+    }, signal, 10 * 60_000)
+    const bars = rows.flatMap((quote): OptionBar[] => {
+      const bid = Number(quote.bid)
+      const ask = Number(quote.ask)
+      const strike = Number(quote.strike)
+      const right = String(quote.right).toLowerCase()
+      const type = right === 'c' || right === 'call' ? 'call' : right === 'p' || right === 'put' ? 'put' : null
+      const dt = DateTime.fromISO(String(quote.timestamp), { zone: MARKET_ZONE })
+      if (!type || !dt.isValid || !Number.isFinite(strike) || !Number.isFinite(bid) ||
+          !Number.isFinite(ask) || bid < 0 || ask < bid) return []
+      const midpoint = (bid + ask) / 2
+      return [{
+        ticker: formatOptionTicker({ root, expirationDate: expiration, type, strike }),
+        timestamp: dt.toMillis(),
+        open: midpoint,
+        high: midpoint,
+        low: midpoint,
+        close: midpoint,
+        volume: 0,
+        bid,
+        ask,
+        ...(quote.bid_size !== undefined ? { bidSize: Number(quote.bid_size) } : {}),
+        ...(quote.ask_size !== undefined ? { askSize: Number(quote.ask_size) } : {})
+      }]
+    })
+    if (rows.length > 0 && bars.length === 0) {
+      throw new Error(
+        `ThetaData returned ${rows.length} archive quote rows for ${root} ${expiration} on ${date}, ` +
+        'but none matched the expected timestamp/strike/right/bid/ask schema. Nothing was cached.'
+      )
+    }
+    return bars
   }
 
   async testConnection(options: FetchOptions = {}): Promise<ProviderStatus> {

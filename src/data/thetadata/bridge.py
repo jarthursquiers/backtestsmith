@@ -39,9 +39,28 @@ def main():
         try:
             operation = request["operation"]
             payload = request.get("payload", {})
-            if operation == "test":
-                frame = client.option_list_expirations(symbol="SPX")
-                result = {"expirations": len(frame)}
+            if operation in ("test", "expirations"):
+                symbol = payload.get("underlying", "SPX").upper()
+                symbols = ["SPX", "SPXW"] if symbol == "SPX" else [symbol]
+                expiration_rows = []
+                for expiration_symbol in symbols:
+                    try:
+                        expiration_rows.extend(rows(client.option_list_expirations(symbol=expiration_symbol)))
+                    except NoDataFoundError:
+                        continue
+                if operation == "test":
+                    result = {"expirations": len(set(
+                        serializable(row.get("expiration") or row.get("date"))
+                        for row in expiration_rows
+                        if row.get("expiration") is not None or row.get("date") is not None
+                    ))}
+                else:
+                    result = set()
+                    for row in expiration_rows:
+                        value = row.get("expiration") or row.get("date")
+                        if value is not None:
+                            result.add(serializable(value))
+                    result = sorted(result)
             elif operation == "contracts":
                 expiration = date.fromisoformat(payload["expiration"])
                 result = []
@@ -53,7 +72,7 @@ def main():
                         frame = client.option_list_strikes(symbol=symbol, expiration=expiration)
                         for row in rows(frame):
                             result.append({"symbol": symbol, "expiration": payload["expiration"], "strike": row["strike"]})
-                    except Exception:
+                    except NoDataFoundError:
                         # A root not listing this expiration is normal (for
                         # example SPX on most weekly expiration dates).
                         continue
@@ -75,6 +94,31 @@ def main():
                     # Absence is market data: this contract had no NBBO quote
                     # on the requested day. The cache must record an empty day
                     # rather than aborting the entire study or retrying forever.
+                    result = []
+            elif operation == "archive_quotes":
+                try:
+                    frame = client.option_history_quote(
+                        symbol=payload["symbol"],
+                        expiration=date.fromisoformat(payload["expiration"]),
+                        date=date.fromisoformat(payload["date"]),
+                        strike="*",
+                        right="both",
+                        start_time="09:30:00",
+                        end_time="16:00:00",
+                        interval="1m",
+                    )
+                    result = []
+                    for row in rows(frame):
+                        result.append({
+                            "timestamp": row["timestamp"],
+                            "strike": row["strike"],
+                            "right": row["right"],
+                            "bid": row["bid"],
+                            "ask": row["ask"],
+                            "bid_size": row.get("bid_size"),
+                            "ask_size": row.get("ask_size"),
+                        })
+                except NoDataFoundError:
                     result = []
             else:
                 raise ValueError(f"Unknown operation: {operation}")

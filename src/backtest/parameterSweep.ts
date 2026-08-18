@@ -35,7 +35,18 @@ const APPLIERS: Record<string, { apply: Applier; kind: 'entry' | 'management' }>
   },
   emaPeriod: {
     kind: 'entry',
-    apply: (c, v) => ({ ...c, entry: { type: 'ema', period: v } })
+    // Rebuilding the whole entry would turn a breakout study into an EMA one
+    // partway through a sweep. An axis that does not apply is a no-op, not a
+    // silent change of strategy.
+    apply: (c, v) => (c.entry.type === 'ema' ? { ...c, entry: { ...c.entry, period: v } } : c)
+  },
+  openingRangeMinutes: {
+    kind: 'entry',
+    apply: (c, v) => (c.entry.type === 'orb' ? { ...c, entry: { ...c.entry, openingRangeMinutes: v } } : c)
+  },
+  confirmationMinutes: {
+    kind: 'entry',
+    apply: (c, v) => (c.entry.type === 'orb' ? { ...c, entry: { ...c.entry, confirmationMinutes: v } } : c)
   },
   offsetPoints: {
     kind: 'entry',
@@ -47,7 +58,18 @@ const APPLIERS: Record<string, { apply: Applier; kind: 'entry' | 'management' }>
   },
   expectedMoveBuffer: {
     kind: 'entry',
-    apply: (c, v) => ({ ...c, placement: { type: 'expectedMove', buffer: v } })
+    // Preserves the anchor: buffer and anchor are independent choices, and
+    // resetting one while sweeping the other would confound the result.
+    apply: (c, v) => ({
+      ...c,
+      placement: {
+        type: 'expectedMove',
+        buffer: v,
+        ...(c.placement.type === 'expectedMove' && c.placement.anchor !== undefined
+          ? { anchor: c.placement.anchor }
+          : {})
+      }
+    })
   },
   slippage: {
     kind: 'entry',

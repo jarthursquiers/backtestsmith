@@ -19,39 +19,11 @@ import { StudyProgressPanel } from '../components/StudyProgressPanel.js'
 import { fmtCurrency, fmtDate, fmtInt, shiftDate, todayEastern } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
 import { nextTradingDay } from '../../core/time/marketTime.js'
-
-const METHOD_LABELS: Record<string, string> = {
-  hold: 'Hold to expiration',
-  tp25: '+25% target',
-  tp50: '+50% target',
-  tp75: '+75% target',
-  tp100: '+100% target',
-  tp150: '+150% target',
-  tp200: '+200% target',
-  tp300: '+300% target',
-  'tp50-sl50': '+50% / -50%',
-  'tp100-sl50': '+100% / -50%',
-  'tp150-sl50': '+150% / -50%',
-  'tp200-sl50': '+200% / -50%',
-  centerTouch: 'Center strike touch',
-  'tent1.0': 'Tent <= 1.00',
-  'tent0.75': 'Tent <= 0.75',
-  'tent0.5': 'Tent <= 0.50',
-  'tent0.25': 'Tent <= 0.25',
-  dte3: 'Exit at 3 DTE',
-  dte2: 'Exit at 2 DTE',
-  dte1: 'Exit at 1 DTE'
-}
-
-function methodLabel(id: string): string {
-  return METHOD_LABELS[id] ?? id
-}
+import { managementLabel } from '../../shared/managementCatalog.js'
+import { describeConfig, describeEntry } from '../../shared/strategyCatalog.js'
 
 function configDescription(run: StudyRunSummary): string {
-  const entry = run.config.entry.type === 'ema'
-    ? `${run.config.entry.period} EMA${run.config.entry.meanReversionOverride ? ' + two-candle override' : ''}`
-    : `${run.config.entry.direction} fixed`
-  return `${run.config.from} -> ${run.config.to} | ${entry} | ${run.config.targetDte} DTE | ${run.config.wingWidth}-wide`
+  return `${run.config.from} -> ${run.config.to} | ${describeConfig(run.config)}`
 }
 
 export function ForwardTestPage() {
@@ -175,7 +147,7 @@ export function ForwardTestPage() {
                   <Field label="Management rule" hint="One method per lock prevents choosing the winner after seeing forward results.">
                     <Select value={management} onChange={(event) => setManagement(event.target.value)}>
                       {(source?.config.managements ?? []).map((id) => (
-                        <option key={id} value={id}>{methodLabel(id)}</option>
+                        <option key={id} value={id}>{managementLabel(id)}</option>
                       ))}
                     </Select>
                   </Field>
@@ -236,7 +208,7 @@ export function ForwardTestPage() {
                 <div><span className="text-ink-dim">Locked:</span> {fmtDate(selectedTest.createdAt)}</div>
                 <div><span className="text-ink-dim">Configuration hash:</span> <code className="num">{selectedTest.configHash}</code></div>
                 <div><span className="text-ink-dim">Engine:</span> {selectedTest.appVersion}{selectedTest.gitCommit ? ` (${selectedTest.gitCommit.slice(0, 12)})` : ''}</div>
-                <div><span className="text-ink-dim">Rules:</span> {selectedTest.config.entry.type === 'ema' ? `${selectedTest.config.entry.period} EMA` : selectedTest.config.entry.direction}, {selectedTest.config.targetDte} DTE, {selectedTest.config.wingWidth}-wide, {methodLabel(selectedTest.config.managements[0] ?? '')}</div>
+                <div><span className="text-ink-dim">Rules:</span> {describeEntry(selectedTest.config)}, {selectedTest.config.targetDte === 0 ? '0DTE' : `${selectedTest.config.targetDte} DTE`}, {selectedTest.config.wingWidth}-wide, {managementLabel(selectedTest.config.managements[0] ?? '')}</div>
               </div>
               {selectedTest.state === 'active' && (
                 <div className="flex flex-wrap items-end gap-3">

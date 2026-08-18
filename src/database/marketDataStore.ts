@@ -50,6 +50,10 @@ const OPTION_BAR_COLUMNS: readonly AppendType[] = [
   'double'   // ask_size
 ]
 
+const BAR_COVERAGE_COLUMNS: readonly AppendType[] = [
+  'varchar', 'varchar', 'varchar', 'integer', 'varchar', 'integer', 'varchar', 'bigint'
+]
+
 /**
  * Persistent store for downloaded market data.
  *
@@ -244,6 +248,76 @@ export class MarketDataStore {
     })
 
     log.debug('bars cached', { ticker, dates: allDates.size, bars: bars.length })
+  }
+
+  /**
+   * Atomically replaces one full root/expiration quote snapshot and marks every
+   * listed contract covered, including contracts for which ThetaData returned
+   * no quote. Bulk writes make full-chain archival practical.
+   */
+  async putOptionArchiveDay(
+    contracts: readonly OptionContract[],
+    date: MarketDate,
+    bars: readonly OptionBar[],
+    provider: string
+  ): Promise<void> {
+    const tickers = [...new Set(contracts.map((contract) => contract.ticker))]
+    if (tickers.length === 0) return
+    const allowed = new Set(tickers)
+    const accepted = bars.filter((bar) => allowed.has(bar.ticker) && marketDateOf(bar.timestamp) === date)
+    const counts = new Map<string, number>()
+    for (const bar of accepted) counts.set(bar.ticker, (counts.get(bar.ticker) ?? 0) + 1)
+    const fetchedAt = Date.now()
+
+    await this.db.transaction(async () => {
+      for (let offset = 0; offset < tickers.length; offset += 500) {
+        const chunk = tickers.slice(offset, offset + 500)
+        const placeholders = chunk.map(() => '?').join(', ')
+        await this.db.run(
+          `DELETE FROM option_bars
+            WHERE market_date = ? AND timespan = 'minute' AND multiplier = 1
+              AND ticker IN (${placeholders})`,
+          [date, ...chunk]
+        )
+        await this.db.run(
+          `DELETE FROM bar_coverage
+            WHERE market_date = ? AND timespan = 'minute' AND multiplier = 1
+              AND ticker IN (${placeholders})`,
+          [date, ...chunk]
+        )
+      }
+
+      if (accepted.length > 0) {
+        await this.db.append('option_bars', OPTION_BAR_COLUMNS, accepted.map((bar) => [
+          bar.ticker, 'minute', 1, bar.timestamp, date,
+          bar.open, bar.high, bar.low, bar.close,
+          bar.volume ?? null, bar.vwap ?? null, bar.transactions ?? null,
+          bar.bid ?? null, bar.ask ?? null, bar.bidSize ?? null, bar.askSize ?? null
+        ]))
+      }
+
+      await this.db.append('bar_coverage', BAR_COVERAGE_COLUMNS, tickers.map((ticker) => [
+        ticker, date, 'minute', 1, 'option', counts.get(ticker) ?? 0, provider, fetchedAt
+      ]))
+    })
+    log.info('option archive day cached', { date, contracts: tickers.length, bars: accepted.length })
+  }
+
+  async hasOptionArchiveCoverage(
+    contracts: readonly OptionContract[],
+    date: MarketDate,
+    provider: string
+  ): Promise<boolean> {
+    const expected = new Set(contracts.map((contract) => contract.ticker))
+    if (expected.size === 0) return true
+    const rows = await this.db.query<{ ticker: string }>(
+      `SELECT ticker FROM bar_coverage
+        WHERE market_date = ? AND timespan = 'minute' AND multiplier = 1
+          AND kind = 'option' AND provider = ?`,
+      [date, provider]
+    )
+    const covered = new Set(rows.map((row) => row.ticker))
+    return [...expected].every((ticker) => covered.has(ticker))
   }
 
   async getOptionBars(

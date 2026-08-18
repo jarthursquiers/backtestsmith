@@ -28,20 +28,27 @@ export interface SelectExpirationOptions {
   rule?: ExpirationRule
   /** Widest acceptable deviation from the target, in calendar days. */
   maxDeviation?: number
+  /**
+   * Admits the entry date itself as an expiration.
+   *
+   * Off by default and required explicitly, because a same-day expiration is a
+   * different instrument with different risk: for a DTE-targeted study it would
+   * be a corruption, while for a 0DTE study it is the entire point.
+   */
+  allowSameDay?: boolean
 }
 
 /**
  * Picks an expiration for a target DTE.
  *
- * Only expirations strictly after the entry date are considered: a same-day
- * expiration is a different instrument with different risk, and silently
- * substituting one would corrupt a DTE-targeted study.
+ * Expirations before the entry date are never considered, and the entry date
+ * itself only when `allowSameDay` says so.
  */
 export function selectExpiration(options: SelectExpirationOptions): ExpirationChoice | null {
-  const { entryDate, available, targetDte, rule = 'nearest', maxDeviation } = options
+  const { entryDate, available, targetDte, rule = 'nearest', maxDeviation, allowSameDay = false } = options
 
   const candidates: ExpirationChoice[] = available
-    .filter((expiration) => expiration > entryDate)
+    .filter((expiration) => (allowSameDay ? expiration >= entryDate : expiration > entryDate))
     .map((expiration) => {
       const calendarDte = calendarDaysBetween(entryDate, expiration)
       return {

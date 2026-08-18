@@ -37,18 +37,22 @@ export class ThetaDataClient {
     return this.completed
   }
 
-  request<T>(operation: string, payload: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
+  request<T>(
+    operation: string,
+    payload: Record<string, unknown> = {},
+    signal?: AbortSignal,
+    timeoutMs = 90_000
+  ): Promise<T> {
     if (!this.hasApiKey()) return Promise.reject(new Error('No ThetaData API key configured. Add it on the Data screen.'))
     const child = this.ensureProcess()
     const id = this.nextId++
 
     return new Promise<T>((resolve, reject) => {
-      const timeoutMs = 90_000
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return
         this.pending.delete(id)
         this.close()
-        reject(new Error(`ThetaData ${operation} request timed out after 90 seconds`))
+        reject(new Error(`ThetaData ${operation} request timed out after ${Math.round(timeoutMs / 1000)} seconds`))
       }, timeoutMs)
       timer.unref?.()
       const onAbort = (): void => {

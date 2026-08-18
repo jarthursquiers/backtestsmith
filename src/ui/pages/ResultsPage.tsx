@@ -28,6 +28,7 @@ import {
   Spinner,
   StatTile
 } from '../components/primitives.js'
+import { describeConfig, findStrategy } from '../../shared/strategyCatalog.js'
 import { fmtCurrency, fmtDate, fmtInt, fmtPct } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
 import { AnalyticsPanel } from '../components/AnalyticsPanel.js'
@@ -183,8 +184,8 @@ export function ResultsPage() {
         {run && (
           <>
             <Card
-              title="Run"
-              subtitle={`${run.config.from} to ${run.config.to} · entry ${run.config.entryTime} ET`}
+              title={findStrategy(run.config.strategyId ?? '')?.label ?? 'Run'}
+              subtitle={`${run.config.from} to ${run.config.to} · ${describeConfig(run.config)}`}
               actions={
                 <Field label="">
                   <Select value={sizing} onChange={(e) => setSizing(e.target.value as PositionSizing)}>
@@ -199,7 +200,11 @@ export function ResultsPage() {
                 <StatTile label="Methods" value={fmtInt(run.summaries.length)} />
                 <StatTile label="Trades" value={fmtInt(run.trades.length)} />
                 <StatTile label="Skipped" value={fmtInt(run.skipped.length)} tone={run.skipped.length > 0 ? 'warn' : 'neutral'} />
-                <StatTile label="Target DTE" value={run.config.targetDte} hint={`${run.config.wingWidth} wide`} />
+                <StatTile
+                  label={run.config.targetDte === 0 ? 'Expiration' : 'Target DTE'}
+                  value={run.config.targetDte === 0 ? '0DTE' : run.config.targetDte}
+                  hint={`${run.config.wingWidth} wide`}
+                />
                 <StatTile label="Version" value={run.appVersion} hint={run.gitCommit?.slice(0, 7)} />
               </div>
 

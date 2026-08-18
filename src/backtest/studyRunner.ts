@@ -3,7 +3,9 @@ import type { OptionContract, OptionType } from '../domain/contracts.js'
 import type { ButterflyDefinition, ButterflySeries, MissingDataPolicy, PricingAssumptions } from '../domain/butterfly.js'
 import type { TradeResult } from '../shared/trade.js'
 import {
+  isZeroDteStudy,
   normalizeSkipReason,
+  resolveExpirationWeekdays,
   resolveIndexTicker,
   type StudyConfig,
   type StudyProgress,
@@ -18,7 +20,13 @@ import {
   type MarketDate
 } from '../core/time/marketTime.js'
 import { buildButterfly } from './buildButterfly.js'
-import { emaDirectionStrategy, fixedDirectionStrategy, type EntryStrategy } from './entryStrategy.js'
+import {
+  emaDirectionStrategy,
+  fixedDirectionStrategy,
+  orbBreakoutStrategy,
+  type EntryStrategy,
+  type EntryTiming
+} from './entryStrategy.js'
 import { candidateExpirationDates, selectExpiration } from './expirationSelection.js'
 import { expectedMoveFromStraddle } from './expectedMove.js'
 import { buildLegSeries, resolveLegQuote, type LegSeries } from './legPricing.js'
@@ -124,9 +132,34 @@ export async function preflightStudy(
   }
 
   if (underlyingMinuteSessions === 0) {
+    /*
+     * A rule that reads intraday shape cannot be approximated. Where the entry
+     * *level* can be recovered from put-call parity, an opening range is a claim
+     * about a whole window of the session, and reconstructing that from option
+     * prints would be inventing the signal rather than measuring it.
+     */
+    if (config.entry.type === 'orb') {
+      blockers.push(
+        `No intraday ${indexTicker} data is cached at the start of this range, and an opening range breakout ` +
+          'cannot be measured without it. Download or import SPX minute history for this range first.'
+      )
+    } else {
+      warnings.push(
+        `No intraday data is cached for ${indexTicker} at the start of this range. The index level at entry ` +
+          'will be derived from put-call parity, and underlying-location rules such as centre touch cannot fire.'
+      )
+    }
+  } else if (config.entry.type === 'orb' && underlyingMinuteSessions < Math.min(10, sessions.length)) {
     warnings.push(
-      `No intraday data is cached for ${indexTicker} at the start of this range. The index level at entry ` +
-        'will be derived from put-call parity, and underlying-location rules such as centre touch cannot fire.'
+      `Only ${underlyingMinuteSessions} of the first ${Math.min(10, sessions.length)} sessions have cached ` +
+        `${indexTicker} minute bars. Sessions without them cannot produce an opening range and will be skipped.`
+    )
+  }
+
+  if (isZeroDteStudy(config) && (config.maxDeviation ?? 0) > 0) {
+    warnings.push(
+      `This 0DTE study allows a ${config.maxDeviation}-day expiration deviation, so a session whose own ` +
+        'expiration is unlisted would be traded as an overnight structure instead of being skipped.'
     )
   }
 
@@ -152,6 +185,14 @@ export interface StudyOutcome {
 
 function buildEntryStrategy(config: StudyConfig): EntryStrategy {
   if (config.entry.type === 'fixed') return fixedDirectionStrategy(config.entry.direction)
+  if (config.entry.type === 'orb') {
+    return orbBreakoutStrategy({
+      openingRangeMinutes: config.entry.openingRangeMinutes,
+      confirmationMinutes: config.entry.confirmationMinutes,
+      cutoffTime: config.entry.cutoffTime,
+      ...(config.entry.invert !== undefined ? { invert: config.entry.invert } : {})
+    })
+  }
   return emaDirectionStrategy({
     period: config.entry.period,
     ...(config.entry.invert !== undefined ? { invert: config.entry.invert } : {}),
@@ -174,7 +215,8 @@ function buildPlacement(config: StudyConfig, expectedMove: number | null): Butte
       if (expectedMove === null) return null
       return expectedMovePlacement({
         expectedMove,
-        ...(config.placement.buffer !== undefined ? { buffer: config.placement.buffer } : {})
+        ...(config.placement.buffer !== undefined ? { buffer: config.placement.buffer } : {}),
+        ...(config.placement.anchor !== undefined ? { anchor: config.placement.anchor } : {})
       })
   }
 }
@@ -256,21 +298,58 @@ export async function runStudy(
       hooks.onSkip?.({ date: entryDate, reason })
     }
 
-    const entryTimestamp = easternToTimestamp(entryDate, entryTime.hour, entryTime.minute)
-
     // Yesterday's close picks the at-the-money strike. It is known at entry, so
     // using it introduces no look-ahead, and it avoids the circularity of
     // needing the index level to find the strike that reveals the index level.
     const previous = previousCompletedBar(dailyBars, entryDate)
-    if (!previous) {
+    if (!previous && config.entry.type === 'ema') {
       skip('no completed daily bar before this date')
       continue
     }
 
+    const cachedMinutes = await source.getUnderlyingMinutes(indexTicker, entryDate)
+    const cachedByMinute = new Map(
+      cachedMinutes.map((b) => [Math.floor(b.timestamp / 60_000) * 60_000, b.close])
+    )
+
+    /*
+     * --- when to enter -------------------------------------------------------
+     *
+     * Most rules enter at a configured clock time. A signal-triggered rule -
+     * an opening range breakout, say - decides its own minute from intraday
+     * data, and may decide there is no trade at all. Resolving that here, before
+     * any chain is fetched, means a session with no signal costs nothing.
+     */
+    const scheduledTimestamp = easternToTimestamp(entryDate, entryTime.hour, entryTime.minute)
+    let entryTimestamp = scheduledTimestamp
+    let timing: EntryTiming | undefined
+
+    if (entryStrategy.resolveEntryTiming) {
+      const outcome = entryStrategy.resolveEntryTiming({
+        entryDate,
+        scheduledTimestamp,
+        underlyingMinutes: cachedMinutes
+      })
+      if (!outcome.ok) {
+        skip(outcome.reason)
+        continue
+      }
+      timing = outcome.timing
+      entryTimestamp = timing.entryTimestamp
+    }
+
     // --- choose an expiration -------------------------------------------------
+    /*
+     * A 0DTE study trades the session it enters on, so the entry date is itself
+     * a candidate. Everything longer-dated starts the search tomorrow, because a
+     * same-day expiration is a different instrument and substituting one would
+     * corrupt a DTE-targeted study.
+     */
+    const sameDayExpiration = isZeroDteStudy(config)
     const candidates = candidateExpirationDates(
-      shiftDays(entryDate, 1),
-      shiftDays(entryDate, config.targetDte + (config.maxDeviation ?? 3) + 1)
+      sameDayExpiration ? entryDate : shiftDays(entryDate, 1),
+      shiftDays(entryDate, config.targetDte + (config.maxDeviation ?? 3) + 1),
+      resolveExpirationWeekdays(config)
     )
 
     const optionTypeForChain: OptionType =
@@ -293,6 +372,7 @@ export async function runStudy(
       available: listed,
       targetDte: config.targetDte,
       rule: config.expirationRule,
+      allowSameDay: sameDayExpiration,
       ...(config.maxDeviation !== undefined ? { maxDeviation: config.maxDeviation } : {})
     })
     if (!choice) {
@@ -311,14 +391,13 @@ export async function runStudy(
     const rootOk = (c: OptionContract): boolean =>
       !config.preferredRoot || (c.root ?? '').toUpperCase() === config.preferredRoot.toUpperCase()
 
-    const cachedMinutes = await source.getUnderlyingMinutes(indexTicker, entryDate)
-    const cachedByMinute = new Map(
-      cachedMinutes.map((b) => [Math.floor(b.timestamp / 60_000) * 60_000, b.close])
-    )
-
     // The actual entry-minute index is a better ATM reference than yesterday's
     // close. The latter remains a fallback for providers without index minutes.
-    const strikeReference = cachedByMinute.get(entryTimestamp) ?? previous.close
+    const strikeReference = cachedByMinute.get(entryTimestamp) ?? previous?.close
+    if (strikeReference === undefined) {
+      skip('no index level to select an at-the-money strike from: neither an entry-minute bar nor a prior daily close')
+      continue
+    }
     const commonStrikes = putChain
       .filter(rootOk)
       .map((c) => c.strike)
@@ -438,7 +517,8 @@ export async function runStudy(
       entryTimestamp: filledAt,
       entryDate,
       dailyBars,
-      underlyingAtEntry
+      underlyingAtEntry,
+      ...(timing ? { timing } : {})
     })
     if (!signal) {
       skip('entry strategy produced no signal')

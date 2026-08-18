@@ -2,6 +2,14 @@ import { useEffect, useMemo, useState } from 'react'
 import type { StudyConfig, StudyProgress } from '../../shared/study.js'
 import type { SweepAxis, SweepResult } from '../../shared/sweep.js'
 import {
+  buildStudyConfig,
+  DEFAULT_STRATEGY_ID,
+  defaultStrategyParams,
+  requireStrategy,
+  type StrategyParamValue
+} from '../../shared/strategyCatalog.js'
+import { StrategyPicker } from '../components/StrategyPicker.js'
+import {
   Badge,
   Button,
   Card,
@@ -17,13 +25,26 @@ import {
 import { fmtCurrency, fmtInt, shiftDate, todayEastern } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
 
-/** Axes the engine can sweep, with their cost character. */
-const AXES: { name: string; label: string; kind: 'entry' | 'management'; placeholder: string }[] = [
+/**
+ * Axes the engine can sweep, with their cost character.
+ *
+ * `strategies` narrows the list to the axes that mean something for the chosen
+ * rule set: an EMA period is inert on a breakout study, and offering it invites
+ * a sweep whose every combination is identical.
+ */
+const AXES: {
+  name: string
+  label: string
+  kind: 'entry' | 'management'
+  placeholder: string
+}[] = [
   { name: 'profitTarget', label: 'Profit target %', kind: 'management', placeholder: '25, 50, 75-300:25' },
   { name: 'stopLoss', label: 'Stop loss %', kind: 'management', placeholder: '25, 50, 75, 100' },
   { name: 'targetDte', label: 'Target DTE', kind: 'entry', placeholder: '5, 7, 10' },
   { name: 'wingWidth', label: 'Wing width', kind: 'entry', placeholder: '10, 25, 50' },
   { name: 'emaPeriod', label: 'EMA period', kind: 'entry', placeholder: '9, 21' },
+  { name: 'openingRangeMinutes', label: 'Opening range minutes', kind: 'entry', placeholder: '5, 15, 30' },
+  { name: 'confirmationMinutes', label: 'Confirmation minutes', kind: 'entry', placeholder: '1, 5, 15' },
   { name: 'offsetPoints', label: 'Offset points OTM', kind: 'entry', placeholder: '50, 100, 150' },
   { name: 'expectedMoveBuffer', label: 'Expected move buffer', kind: 'entry', placeholder: '0, 10, 25' },
   { name: 'slippage', label: 'Slippage', kind: 'entry', placeholder: '0, 0.05, 0.1' },
@@ -57,13 +78,33 @@ export function SweepPage() {
   const [progress, setProgress] = useState<StudyProgress | null>(null)
   const [results, setResults] = useState<SweepResult[]>([])
 
+  const [strategyId, setStrategyId] = useState(DEFAULT_STRATEGY_ID)
+  const strategy = useMemo(() => requireStrategy(strategyId), [strategyId])
+  const [params, setParams] = useState<Record<string, StrategyParamValue>>(() =>
+    defaultStrategyParams(requireStrategy(DEFAULT_STRATEGY_ID))
+  )
+
   useEffect(() => window.api.study.onProgress(setProgress), [])
+
+  /** Axes offered for the chosen strategy, plus any the user has already filled. */
+  const availableAxes = useMemo(
+    () => AXES.filter((axis) => strategy.sweepAxes.includes(axis.name)),
+    [strategy]
+  )
 
   const axes = useMemo((): SweepAxis[] =>
     Object.entries(inputs)
+      .filter(([name]) => strategy.sweepAxes.includes(name))
       .map(([name, raw]) => ({ name, values: parseValues(raw) }))
       .filter((a) => a.values.length > 0),
-  [inputs])
+  [inputs, strategy])
+
+  const selectStrategy = (id: string): void => {
+    const next = requireStrategy(id)
+    setStrategyId(id)
+    setParams(defaultStrategyParams(next))
+    setResults([])
+  }
 
   const estimate = useMemo(() => {
     const entryAxes = axes.filter((a) => AXES.find((x) => x.name === a.name)?.kind === 'entry')
@@ -75,23 +116,21 @@ export function SweepPage() {
     }
   }, [axes])
 
-  const baseConfig = (): StudyConfig => ({
-    underlying: 'SPX',
-    from,
-    to,
-    entryTime: '09:35',
-    entry: { type: 'ema', period: 9 },
-    targetDte: 7,
-    expirationRule: 'nearest',
-    maxDeviation: 2,
-    preferredRoot: 'SPXW',
-    placement: { type: 'expectedMove', buffer: 0 },
-    wingWidth: 25,
-    quantity: 1,
-    pricing: { model: 'close', slippage: 0.05, missingDataMode: 'carryForward', maxStaleMinutes: 1 },
-    minimumCoverage: 0.8,
-    managements: ['hold']
-  })
+  /*
+   * The base configuration comes from the same catalogue Run Study uses, so a
+   * sweep varies parameters around a strategy that is genuinely the one being
+   * researched rather than a second, hand-maintained copy of it.
+   */
+  const baseConfig = (): StudyConfig =>
+    buildStudyConfig({
+      strategyId,
+      params,
+      from,
+      to,
+      managements: ['hold'],
+      pricing: { model: 'close', slippage: 0.05, missingDataMode: 'carryForward', maxStaleMinutes: 1 },
+      minimumCoverage: 0.8
+    })
 
   const [runState, run] = useAsyncAction(async () => {
     setResults([])
@@ -138,6 +177,13 @@ export function SweepPage() {
 
         {runState.error && <Notice tone="error">{runState.error}</Notice>}
 
+        <StrategyPicker
+          strategy={strategy}
+          params={params}
+          onSelect={selectStrategy}
+          onParamChange={(key, value) => setParams((prev) => ({ ...prev, [key]: value }))}
+        />
+
         <Card title="Range and objective">
           <div className="grid gap-3 md:grid-cols-3">
             <Field label="From">
@@ -170,7 +216,7 @@ export function SweepPage() {
                   {kind === 'management' ? 'Management axes (no extra data)' : 'Entry axes (each combination refetches)'}
                 </div>
                 <div className="grid gap-3 md:grid-cols-3">
-                  {AXES.filter((a) => a.kind === kind).map((axis) => (
+                  {availableAxes.filter((a) => a.kind === kind).map((axis) => (
                     <Field key={axis.name} label={axis.label}>
                       <Input
                         value={inputs[axis.name] ?? ''}

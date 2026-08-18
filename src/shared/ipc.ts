@@ -23,6 +23,7 @@ import type {
 import type { QueueStats } from './queue.js'
 import type { LogLevel, LogRecord } from './logging.js'
 import type { SecretStatus } from './secrets.js'
+import type { OptionArchiveProgress, OptionArchiveRequest, OptionArchiveResult, OptionArchiveStatus } from './optionArchive.js'
 import type { DeepPartial, Settings } from './settings.js'
 import type {
   CreateForwardTestRequest,
@@ -52,6 +53,10 @@ export const IPC = {
   thetaSecretsSetApiKey: 'theta:secrets:setApiKey',
   thetaSecretsClear: 'theta:secrets:clear',
   thetaTestConnection: 'theta:testConnection',
+  thetaArchiveRun: 'theta:archive:run',
+  thetaArchiveStatus: 'theta:archive:status',
+  thetaArchiveCancel: 'theta:archive:cancel',
+  thetaArchiveProgressEvent: 'theta:archive:progress:event',
 
   massiveTestConnection: 'massive:testConnection',
   massiveGetContracts: 'massive:getContracts',
@@ -151,6 +156,10 @@ export interface AppApi {
     setApiKey(key: string): Promise<{ ok: boolean; message: string }>
     clear(): Promise<void>
     testConnection(): Promise<ProviderStatus>
+    archive(request: OptionArchiveRequest): Promise<OptionArchiveResult>
+    archiveStatus(): Promise<OptionArchiveStatus>
+    cancelArchive(): Promise<void>
+    onArchiveProgress(listener: (progress: OptionArchiveProgress) => void): () => void
   }
   massive: {
     testConnection(): Promise<ProviderStatus>

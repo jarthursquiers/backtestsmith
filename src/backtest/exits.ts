@@ -1,4 +1,11 @@
 import type { ButterflyDefinition, ButterflyObservation } from '../domain/butterfly.js'
+import {
+  easternToTimestamp,
+  marketDateOf,
+  parseTimeOfDay,
+  sessionClose,
+  sessionOpen
+} from '../core/time/marketTime.js'
 
 /**
  * Exit strategies.
@@ -195,6 +202,80 @@ export function timeExit(options: { atDte: number; useTradingDte?: boolean }): E
       // A scheduled exit is meant to model an executable action, so never base
       // it on a carried-forward leg. Continue to the first fresh valid mark.
       if (dte <= atDte && !observation.stale) {
+        return { reason: 'timeExit', exitValue: observation.butterflyValue, ambiguous: false }
+      }
+      return isLast
+        ? { reason: 'expiration', exitValue: observation.butterflyValue, ambiguous: false }
+        : null
+    }
+  }
+}
+
+/**
+ * Closes at a fixed Eastern wall-clock time.
+ *
+ * The natural management axis for an intraday trade: a 0DTE butterfly has no
+ * days left to count down, so "get out by 15:45" is the scheduled exit that
+ * actually means something. On a multi-day trade the same rule fires on the
+ * first afternoon, which is why the catalogue offers it to intraday studies
+ * only.
+ */
+export function timeOfDayExit(time: string): ExitStrategy {
+  const { hour, minute } = parseTimeOfDay(time)
+  const id = `at${String(hour).padStart(2, '0')}${String(minute).padStart(2, '0')}`
+
+  /*
+   * Resolving the Eastern wall clock for every observation would put a timezone
+   * conversion in the innermost loop of the engine. Instead the threshold is
+   * computed once per session and reused for every minute inside that session's
+   * open/close bounds, which are already memoized.
+   */
+  let validFrom = Number.POSITIVE_INFINITY
+  let validTo = Number.NEGATIVE_INFINITY
+  let threshold = 0
+  const thresholdFor = (timestamp: number): number => {
+    if (timestamp < validFrom || timestamp >= validTo) {
+      const date = marketDateOf(timestamp)
+      validFrom = sessionOpen(date)
+      validTo = sessionClose(date)
+      threshold = easternToTimestamp(date, hour, minute)
+    }
+    return threshold
+  }
+
+  return {
+    id,
+    label: `Exit at ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} ET`,
+    evaluate: ({ observation, isLast }) => {
+      // As with the DTE exit, a scheduled action must not be filled on a
+      // carried-forward leg; hold on to the first fresh mark at or past the time.
+      if (observation.timestamp >= thresholdFor(observation.timestamp) && !observation.stale) {
+        return { reason: 'timeExit', exitValue: observation.butterflyValue, ambiguous: false }
+      }
+      return isLast
+        ? { reason: 'expiration', exitValue: observation.butterflyValue, ambiguous: false }
+        : null
+    }
+  }
+}
+
+/**
+ * Closes after a fixed number of minutes in the trade.
+ *
+ * Distinct from a wall-clock exit because entries do not all happen at the same
+ * time: a signal-triggered strategy may enter at 09:50 on one session and 11:20
+ * on the next, and "how long is this structure worth holding" is then a
+ * different question from "when in the day should it be closed".
+ */
+export function elapsedExit(minutes: number): ExitStrategy {
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    throw new Error(`Elapsed exit needs a positive number of minutes, received ${minutes}`)
+  }
+  return {
+    id: `elapsed${minutes}m`,
+    label: `Exit ${minutes} minutes in`,
+    evaluate: ({ observation, isLast }) => {
+      if (observation.minutesSinceEntry >= minutes && !observation.stale) {
         return { reason: 'timeExit', exitValue: observation.butterflyValue, ambiguous: false }
       }
       return isLast

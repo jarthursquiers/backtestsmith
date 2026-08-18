@@ -4,8 +4,13 @@ A local desktop research application for studying historical SPX butterfly optio
 
 The central research question it exists to answer:
 
-> Given a consistent method for entering approximately 7-DTE SPX butterflies,
-> what management method produces the best risk-adjusted results?
+> Given a consistent method for entering SPX butterflies, what management method
+> produces the best risk-adjusted results?
+
+The first entry method studied was a 9 EMA rule at approximately 7 DTE. Entry
+methods are now a catalogue - see [Strategies](#strategies) - so the same
+question can be asked of a 0DTE opening range breakout, or of anything added
+later, against an identical set of exit rules.
 
 This is a research tool, not a trading platform and not an optimizer for finding
 the prettiest historical result.
@@ -28,6 +33,7 @@ Built in verifiable phases. **Phases 1 and 2 are complete.**
 | 10 | MFE / MAE / conditional path analytics | Done |
 | 11 | Generic parameter sweep | Done |
 | 12 | Exports, analytics charts, diagnostics | Done |
+| 13 | Strategy catalogue, signal-triggered entries, 0DTE opening range breakout | Done |
 
 ## Getting started
 
@@ -51,6 +57,17 @@ trade-derived option bars with one-minute NBBO bid/ask quotes when a required
 day is not already cached from ThetaData. Option roots, expirations, and strikes
 also come from ThetaData; Massive is retained only for SPX cash-index history. The key is encrypted with the Windows
 keystore and is never written to the database or logs.
+
+To preserve a research universe before ending a ThetaData subscription, use
+**Data → Archive SPX options for offline research**. The archive enumerates both
+SPX and SPXW contracts and stores every one-minute NBBO contract-day usable by
+an entry between 0 and 60 calendar DTE. It fetches a complete root/expiration
+session at a time, records contracts with no quotes as confirmed empty, and is
+safe to pause and resume. Resume checks the coverage ledger first and makes no
+API request for a block already archived by ThetaData. You can leave the Data
+screen and return without losing the Pause control. After it finishes, enable **Offline only** on Run
+Study to prove a strategy uses DuckDB exclusively. Back up the database from
+Settings before removing provider access.
 
 For development you can instead set the key in the environment; it takes
 precedence over any stored key:
@@ -251,11 +268,72 @@ collapses after calibration is a fixable rate assumption; what remains is the
 irreducible noise that decides whether parity can support center-touch rules or
 only strike placement.
 
+## Strategies
+
+A **strategy** is an entry method plus a structure: when to get in, which way,
+which expiration, and where the butterfly sits. Exits are deliberately *not*
+part of a strategy - the whole research programme is to run one entry population
+against every management rule at once, and folding an exit into a strategy would
+beg the question the app exists to answer.
+
+Strategies are declared in `src/shared/strategyCatalog.ts`, which exposes each
+one's parameters as data. The Run Study and Parameter Sweep screens render that
+declaration, so **adding a strategy is one entry in that file** and no UI work.
+The shipped set:
+
+| Strategy | Entry | Expiration |
+| --- | --- | --- |
+| Opening range breakout 0DTE butterfly | First candle to close outside the session's opening range | Same session |
+| EMA direction swing butterfly | Price against a daily EMA at a fixed time | Target DTE, default 7 |
+| Fixed-time 0DTE butterfly | A set time, always one side. A control for the breakout study | Same session |
+
+Every run stores `strategyId` and the parameter values it was built from, so a
+stored result can say what it was rather than leaving a reader to infer intent
+from a scattering of numbers. Parameters the chosen placement does not consult
+are dropped rather than recorded, so a config never implies a value the run
+never used.
+
+### Opening range breakout, 0DTE
+
+Mark the high and low of the session's opening range (default: the first 15
+minutes). Once it closes, watch each following candle (default: 5 minutes). The
+first to **close** below the range takes a bearish butterfly; the first to close
+above takes a bullish one. A wick through the level is not a signal - that is
+the point of waiting for a candle to complete.
+
+Entry is the minute bar *after* the confirming candle closed. A candle covering
+09:45-09:49 has not closed until 09:50:00, so 09:50 is the earliest bar a trader
+could act on; attributing the entry to the candle's own last bar would hand the
+strategy a minute of hindsight on every trade.
+
+The near wing is placed at the expected move, measured from the at-the-money
+straddle at entry. Direction can be **faded** rather than followed: a butterfly
+is a bet on where price *stops*, so both readings of the signal are worth
+measuring, and which is right is a research question rather than an assumption.
+
+The rule needs real intraday index bars and refuses to run without them. Where
+a single entry-minute *level* can be recovered from put-call parity, an opening
+range is a claim about a whole window of the session, and reconstructing that
+from option prints would be inventing the signal rather than measuring it. The
+preflight blocks such a run outright.
+
+The **breakout cutoff** (default 12:00 ET) is a deliberate imposition, not part
+of the rule as stated: a midday break of the opening range is a different
+phenomenon from an opening drive, and a 0DTE butterfly entered near the close is
+not the same trade. It is a parameter, so widen or tighten it as the research
+requires.
+
 ## Entry generation
 
 Entry signal, expiration selection, and placement are separate modules, so one
 entry population can be held fixed while management varies - and so a placement
 method can be swapped without touching the signal.
+
+Most rules enter at a configured clock time. A signal-triggered rule instead
+implements `resolveEntryTiming`, choosing its own minute from that session's
+intraday bars and reporting a reason when there is no trade to take. The runner
+resolves that before fetching any option chain, so a session with no signal
+costs nothing.
 
 ### Look-ahead prevention
 
@@ -274,13 +352,32 @@ on.
 ### Expiration selection
 
 Target DTE with `nearest`, `preferGte`, or `preferLte`, an optional maximum
-deviation, and ties broken toward the longer-dated contract. Expirations on or
-before the entry date are never selected. Calendar and trading DTE are both
-reported and never conflated.
+deviation, and ties broken toward the longer-dated contract. Calendar and
+trading DTE are both reported and never conflated.
+
+Expirations before the entry date are never selected, and the entry date itself
+only when the caller passes `allowSameDay` - which the runner does for a 0DTE
+study and nothing else. A same-day expiration is a different instrument with
+different risk: for a DTE-targeted study substituting one would be a corruption,
+while for a 0DTE study it is the entire point. A 0DTE study also probes every
+weekday for a listed chain rather than the historic Monday/Wednesday/Friday set,
+and pins its maximum deviation to zero so a session whose own expiration is
+unlisted is skipped rather than quietly traded overnight.
 
 ### Placement
 
-Fixed distance, distance in wing widths, and near-wing-outside-the-expected-move.
+Fixed distance, distance in wing widths, and placement against the expected
+move. The expected-move method takes an **anchor**, because the two ways of
+snapping to listed strikes are genuinely different structures:
+
+- `nearestCenter` rounds the centre to the closest strike, keeping the butterfly
+  nearest its ideal location but possibly leaving the near wing a few points
+  *inside* the expected move.
+- `nearWingOutside` snaps the near wing itself to the first listed strike at or
+  beyond the move, so the whole structure sits outside it, at the cost of
+  pushing the centre slightly further out. This is what "the near wing just
+  touches the expected move line" means, and it is the 0DTE default.
+
 All resolve to strikes the chain actually lists: if a wing is unlisted the
 placement **fails rather than substituting a nearby strike**, since a silently
 narrowed wing changes the risk, the maximum value, and every normalized distance
@@ -370,10 +467,27 @@ the research question is *which management method wins*, and that comparison is
 only valid if every rule is evaluated identically against the same entries.
 
 Available: hold to expiration, fixed profit target, fixed stop, target+stop,
-time exit (calendar or trading DTE), center-strike touch, tent entry at a
-normalized distance, and trailing profit. Trailing supports both give-back as a
-*fraction of peak profit* and give-back in *percentage points from the peak* -
-these are genuinely different rules, not two spellings of one.
+day-count exit (calendar or trading DTE), **Eastern wall-clock exit**, **elapsed
+time in trade**, center-strike touch, tent entry at a normalized distance, and
+trailing profit. Trailing supports both give-back as a *fraction of peak profit*
+and give-back in *percentage points from the peak* - these are genuinely
+different rules, not two spellings of one. A wall-clock exit and an elapsed-time
+exit are likewise different questions once entries are signal-triggered and no
+longer all happen at the same time of day.
+
+The list of methods lives once, in `src/shared/managementCatalog.ts`, which the
+UI renders and `managementSets.ts` resolves into executable rules; a test holds
+the two halves in agreement, and the configured id is stamped onto the resolved
+rule so a run's summaries can never match against a name the rule renamed itself
+out of. Each method is tagged with the trade **horizons** it can fire on, and a
+study offers only the applicable ones - a day-count exit has nothing to count
+down on a 0DTE trade, and a wall-clock exit fires on the first afternoon of a
+seven-day one. A method that cannot fire is not a neutral extra: it silently
+reports itself as hold-to-expiration and pads the comparison with a duplicate.
+
+Because management is simulated against an already-reconstructed path, selecting
+every applicable method costs no extra data - which is why the 0DTE strategies
+select all of them by default.
 
 Rules compose with `combine`, and many rules run against a single reconstructed
 series via `simulateAll`, which is the guarantee that no management method ever
@@ -492,3 +606,17 @@ The suite covers the pieces where silent errors are most costly: Eastern-time
 conversion across both DST boundaries, the holiday and half-session calendar,
 calendar-vs-trading DTE, OCC ticker round-tripping, rate-limit pacing, retry and
 backoff behavior, and provider normalization including the missing-bar case.
+
+For the strategy layer specifically:
+
+- `openingRange.test.ts` - the range spans exactly its window, a wick through the
+  level is not a signal, the first qualifying candle wins rather than the largest
+  break, and entry never lands inside the confirming candle.
+- `orbStudy.test.ts` - the whole 0DTE path end to end against a synthetic market
+  with every minute priced, so anything the study skips is a decision the rules
+  made rather than an artefact of missing data.
+- `strategyCatalog.test.ts` - every catalogued management method has an
+  executable builder and keeps the id it was configured with, and every strategy
+  produces a runnable configuration from its own defaults.
+- `intradayExits.test.ts` - wall-clock and elapsed-time exits, including that
+  neither fills on a carried-forward mark.

@@ -51,17 +51,9 @@ import type {
   StudyRunResult
 } from '../../shared/study.js'
 import { resolveIndexTicker } from '../../shared/study.js'
-import {
-  centerTouch,
-  holdToExpiration,
-  profitTarget,
-  stopLoss,
-  targetWithStop,
-  tentEntry,
-  timeExit,
-  trailingProfit,
-  type ExitStrategy
-} from '../../backtest/exits.js'
+import type { ExitStrategy } from '../../backtest/exits.js'
+import { buildManagementSet } from '../../backtest/managementSets.js'
+import { allManagementsFor } from '../../shared/managementCatalog.js'
 import type { MissingDataPolicy } from '../../domain/butterfly.js'
 import { parseUnderlyingCsv } from '../../data/csv/csvImport.js'
 import type {
@@ -86,11 +78,16 @@ import type { ForwardTestRecord } from '../../database/forwardTestStore.js'
 import type { TradeResult } from '../../shared/trade.js'
 import { planForwardRange } from '../../backtest/forwardTest.js'
 import type { DatabaseBackupResult } from '../../shared/cache.js'
+import type { OptionArchiveProgress, OptionArchiveRequest, OptionArchiveResult } from '../../shared/optionArchive.js'
+import { runOptionArchive } from '../../data/thetadata/archive.js'
+import { THETADATA_OPTION_SOURCE } from '../../data/thetadata/provider.js'
 
 const log = createLogger('ipc')
 
 /** Only one study may run at a time; a second would contend for the same queue. */
 let activeStudy: AbortController | null = null
+let activeOptionArchive: AbortController | null = null
+let optionArchiveProgress: OptionArchiveProgress | null = null
 
 /** Dates advance during a forward test; every other assumption is immutable. */
 function lockedConfigPayload(config: StudyConfig): Omit<StudyConfig, 'from' | 'to'> {
@@ -162,34 +159,37 @@ async function loadForwardDetail(services: AppServices, forwardTestId: string): 
  * provider, which is what makes a sweep over management parameters cost nothing
  * beyond the first combination.
  */
-function buildStudySource(services: AppServices, signal?: AbortSignal): StudyDataSource {
+function buildStudySource(services: AppServices, signal?: AbortSignal, cacheOnly = false): StudyDataSource {
   const minuteShape = { timespan: 'minute', multiplier: 1 }
   const dailyShape = { timespan: 'day', multiplier: 1 }
   return {
     getDailyBars: async (ticker, from, to) =>
-      signal
+      signal && !cacheOnly
         ? (await services.provider.getUnderlyingBars(
             { ticker, from, to, timespan: 'day' },
             { signal, priority: 10 }
           )).bars
         : services.store.getUnderlyingBars(ticker, tradingDaysBetween(from, to), dailyShape),
     getUnderlyingMinutes: async (ticker, date) =>
-      signal
+      signal && !cacheOnly
         ? (await services.provider.getUnderlyingBars(
             { ticker, from: date, to: date, timespan: 'minute' },
             { signal, priority: 10 }
           )).bars
         : services.store.getUnderlyingBars(ticker, [date], minuteShape),
-    getChain: (underlying, expiration, type) =>
-      services.provider.getContracts(
-        { underlying, expirationDate: expiration, type, expired: true },
-        { ...(signal ? { signal } : {}), priority: 20 }
-      ),
+    getChain: (underlying, expiration, type) => cacheOnly
+      ? services.store.getContracts(underlying, expiration, type)
+      : services.provider.getContracts(
+          { underlying, expirationDate: expiration, type, expired: true },
+          { ...(signal ? { signal } : {}), priority: 20 }
+        ),
     getOptionBars: async (ticker, from, to) =>
-      (await services.provider.getOptionBars(
-        { ticker, from, to, timespan: 'minute' },
-        { ...(signal ? { signal } : {}), priority: 20 }
-      )).bars
+      cacheOnly
+        ? services.store.getOptionBars(ticker, tradingDaysBetween(from, to), minuteShape)
+        : (await services.provider.getOptionBars(
+            { ticker, from, to, timespan: 'minute' },
+            { ...(signal ? { signal } : {}), priority: 20 }
+          )).bars
   }
 }
 
@@ -320,6 +320,87 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     services.applySettings()
   })
   handle(IPC.thetaTestConnection, () => services.thetaUpstream.testConnection())
+  handle(IPC.thetaArchiveStatus, () => ({
+    running: activeOptionArchive !== null,
+    progress: optionArchiveProgress
+  }))
+  handle(IPC.thetaArchiveRun, async (request: OptionArchiveRequest): Promise<OptionArchiveResult> => {
+    if (activeOptionArchive) throw new Error('An option archive is already running.')
+    if (activeStudy) throw new Error('Wait for the running study to finish before starting an option archive.')
+    const controller = new AbortController()
+    activeOptionArchive = controller
+    const requestCount = (): number => services.thetaClient.completedRequests
+    const sendProgress = (progress: OptionArchiveProgress): void => {
+      optionArchiveProgress = progress
+      const window = getWindow()
+      if (window && !window.isDestroyed()) {
+        window.webContents.send(IPC.thetaArchiveProgressEvent, progress)
+      }
+    }
+
+    try {
+      return await runOptionArchive(request, {
+        listExpirations: (underlying, signal) => services.thetaUpstream.listExpirations(underlying, signal),
+        getContracts: (underlying, expiration, signal) => services.provider.getContracts(
+          { underlying, expirationDate: expiration, expired: true },
+          { ...(signal ? { signal } : {}), priority: 100 }
+        ),
+        isExpirationDayCovered: (contracts, date) =>
+          services.store.hasOptionArchiveCoverage(contracts, date, THETADATA_OPTION_SOURCE),
+        archiveExpirationDay: async (contracts, date, signal) => {
+          const first = contracts[0]
+          if (!first) return
+          const root = first.root ?? request.underlying.toUpperCase()
+          const bars = await services.thetaUpstream.getOptionArchiveDay(
+            root,
+            first.expirationDate,
+            date,
+            signal
+          )
+          await services.store.putOptionArchiveDay(contracts, date, bars, THETADATA_OPTION_SOURCE)
+        },
+        requestCount
+      }, {
+        signal: controller.signal,
+        onProgress: sendProgress
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (controller.signal.aborted) {
+        const paused: OptionArchiveProgress = {
+          ...(optionArchiveProgress ?? {
+            completed: 0, total: 0, expirations: 0, contracts: 0,
+            contractDays: 0, cachedContractDays: 0, downloadedContractDays: 0,
+            apiRequests: 0, elapsedMs: 0
+          }),
+          phase: 'paused',
+          stage: 'archive paused; completed coverage is retained'
+        }
+        delete paused.error
+        sendProgress(paused)
+        return {
+          cancelled: true,
+          expirations: paused.expirations,
+          contracts: paused.contracts,
+          contractDays: paused.completed,
+          apiRequests: paused.apiRequests,
+          elapsedMs: paused.elapsedMs
+        }
+      }
+      sendProgress({
+        ...(optionArchiveProgress ?? {
+          completed: 0, total: 0, expirations: 0, contracts: 0,
+          contractDays: 0, cachedContractDays: 0, downloadedContractDays: 0,
+          apiRequests: 0, elapsedMs: 0
+        }),
+        phase: 'failed', stage: 'archive failed', error: message
+      })
+      throw error
+    } finally {
+      activeOptionArchive = null
+    }
+  })
+  handle(IPC.thetaArchiveCancel, () => activeOptionArchive?.abort())
 
   // --- Massive --------------------------------------------------------------
   handle(IPC.massiveTestConnection, () => services.upstream.testConnection())
@@ -451,10 +532,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   handle(IPC.studyRun, async (config: StudyConfig, label?: string): Promise<StudyRunResult> => {
     if (activeStudy) throw new Error('A study is already running. Cancel it before starting another.')
+    if (activeOptionArchive) throw new Error('Wait for the option archive to finish before starting a study.')
 
     const controller = new AbortController()
     activeStudy = controller
-    const source = buildStudySource(services, controller.signal)
+    const source = buildStudySource(services, controller.signal, config.offlineOnly === true)
 
     const providerRequests = (): number => services.queue.getStats().completed + services.thetaClient.completedRequests
     const requestsAtStart = providerRequests()
@@ -464,36 +546,42 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     let lastLoggedSession = -1
 
     try {
-      const preparation = await prepareStudyData(
-        config,
-        resolveIndexTicker(config),
-        services.provider,
-        {
-          signal: controller.signal,
-          onProgress: (progress) => {
-            const update: StudyProgress = {
-              phase: 'preparing',
-              completed: progress.completed,
-              total: progress.total,
-              ...(progress.currentDate ? { currentDate: progress.currentDate } : {}),
-              stage: progress.stage,
-              tradesGenerated: 0,
-              skipped: 0,
-              elapsedMs: Date.now() - orchestrationStartedAt,
-              apiRequests: providerRequests() - requestsAtStart
+      const preparation = config.offlineOnly
+        ? null
+        : await prepareStudyData(
+            config,
+            resolveIndexTicker(config),
+            services.provider,
+            {
+              signal: controller.signal,
+              onProgress: (progress) => {
+                const update: StudyProgress = {
+                  phase: 'preparing',
+                  completed: progress.completed,
+                  total: progress.total,
+                  ...(progress.currentDate ? { currentDate: progress.currentDate } : {}),
+                  stage: progress.stage,
+                  tradesGenerated: 0,
+                  skipped: 0,
+                  elapsedMs: Date.now() - orchestrationStartedAt,
+                  apiRequests: providerRequests() - requestsAtStart
+                }
+                const window = getWindow()
+                if (window && !window.isDestroyed()) {
+                  window.webContents.send(IPC.studyProgressEvent, update)
+                }
+                logStudyLine(update, update.apiRequests ?? 0)
+              }
             }
-            const window = getWindow()
-            if (window && !window.isDestroyed()) {
-              window.webContents.send(IPC.studyProgressEvent, update)
-            }
-            logStudyLine(update, update.apiRequests ?? 0)
-          }
-        }
-      )
-      console.log(
-        `[study] data ready  ${preparation.dailyBars} daily bars  ` +
-          `${preparation.minuteBars} minute bars across ${preparation.minuteSessions} sessions`
-      )
+          )
+      if (preparation) {
+        console.log(
+          `[study] data ready  ${preparation.dailyBars} daily bars  ` +
+            `${preparation.minuteBars} minute bars across ${preparation.minuteSessions} sessions`
+        )
+      } else {
+        console.log('[study] offline-only mode: provider preparation disabled')
+      }
 
       // A pre-flight check first, so a run that cannot produce anything says so
       // immediately instead of an hour later.
@@ -701,7 +789,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       for (const point of points) {
         if (controller.signal.aborted) break
 
-        const outcome = await runStudy(point.config, buildStudySource(services), {
+        const outcome = await runStudy(point.config, buildStudySource(services, undefined, point.config.offlineOnly === true), {
           signal: controller.signal,
           onProgress: (progress) => {
             const window = getWindow()
@@ -1000,21 +1088,12 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
      * they cannot diverge on entry price, timing, or data quality. That shared
      * basis is what makes the comparison meaningful rather than decorative.
      */
-    const strategies: ExitStrategy[] = [
-      holdToExpiration(),
-      profitTarget(25),
-      profitTarget(50),
-      profitTarget(100),
-      profitTarget(200),
-      stopLoss(50),
-      targetWithStop(100, 50),
-      targetWithStop(200, 50),
-      trailingProfit({ triggerPct: 100, givebackFractionOfPeak: 0.3 }),
-      centerTouch(),
-      tentEntry(0.5),
-      timeExit({ atDte: 2 }),
-      timeExit({ atDte: 1 })
-    ]
+    const strategies: ExitStrategy[] = buildManagementSet(
+      // Which rules can fire at all depends on the trade: a same-session
+      // butterfly has no days to count down, a multi-day one is not managed by
+      // the wall clock. The catalogue already knows which is which.
+      allManagementsFor(request.expiration === request.entryDate ? 'intraday' : 'multiDay')
+    )
 
     return {
       series,
@@ -1239,12 +1318,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // --- cache ----------------------------------------------------------------
   handle(IPC.cacheStats, () => services.cacheStats())
   handle(IPC.cacheClear, async () => {
+    if (activeOptionArchive || activeStudy) throw new Error('Wait for active data work to finish before deleting the cache.')
     await services.store.clear()
     return services.cacheStats()
   })
 
   handle(IPC.databaseBackup, async (): Promise<DatabaseBackupResult | null> => {
     if (activeStudy) throw new Error('Wait for the running study to finish before creating a backup.')
+    if (activeOptionArchive) throw new Error('Wait for the option archive to finish before creating a backup.')
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z').replace('T', '-')
     const backupDialogOptions = {
       title: 'Back up all Backtestsmith data',

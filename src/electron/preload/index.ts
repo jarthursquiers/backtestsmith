@@ -3,6 +3,7 @@ import { IPC, type AppApi, type IpcResult } from '../../shared/ipc.js'
 import type { LogLevel, LogRecord } from '../../services/logger.js'
 import type { QueueStats } from '../../data/requestQueue.js'
 import type { StudyProgress } from '../../shared/study.js'
+import type { OptionArchiveProgress } from '../../shared/optionArchive.js'
 
 /**
  * The only bridge between the renderer and the main process.
@@ -42,7 +43,11 @@ const api: AppApi = {
     status: () => invoke(IPC.thetaSecretsStatus),
     setApiKey: (key) => invoke(IPC.thetaSecretsSetApiKey, key),
     clear: () => invoke(IPC.thetaSecretsClear),
-    testConnection: () => invoke(IPC.thetaTestConnection)
+    testConnection: () => invoke(IPC.thetaTestConnection),
+    archive: (request) => invoke(IPC.thetaArchiveRun, request),
+    archiveStatus: () => invoke(IPC.thetaArchiveStatus),
+    cancelArchive: () => invoke(IPC.thetaArchiveCancel),
+    onArchiveProgress: (listener) => subscribe<OptionArchiveProgress>(IPC.thetaArchiveProgressEvent, listener)
   },
   massive: {
     testConnection: () => invoke(IPC.massiveTestConnection),
