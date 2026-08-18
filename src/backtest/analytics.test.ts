@@ -355,7 +355,8 @@ describe('exports', () => {
     )
     // A result shipped without its assumptions cannot be checked by anyone else.
     expect(json.config).toBeDefined()
-    expect(json.caveats.join(' ')).toMatch(/not historical NBBO quotes/)
+    expect(json.caveats.join(' ')).toMatch(/one-minute OPRA NBBO quote snapshots/)
+    expect(json.caveats.join(' ')).toMatch(/configured slippage applied/)
     expect(json.caveats.join(' ')).toMatch(/may not be distinguishable from chance/)
     expect(json.trades).toHaveLength(1)
     expect(json.trades[0].entryDebit).toBe(exportedTrade.entryDebit)
