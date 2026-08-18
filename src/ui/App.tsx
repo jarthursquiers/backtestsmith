@@ -13,6 +13,7 @@ import { ComparePage } from './pages/ComparePage.js'
 import { SweepPage } from './pages/SweepPage.js'
 import { DiagnosticsPage } from './pages/DiagnosticsPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
+import { ForwardTestPage } from './pages/ForwardTestPage.js'
 
 interface NavItem {
   to: string
@@ -35,6 +36,7 @@ const NAV_GROUPS: { heading: string; items: NavItem[] }[] = [
       { to: '/explorer', label: 'Contract Explorer' },
       { to: '/underlying', label: 'SPX Underlying' },
       { to: '/run', label: 'Run Study' },
+      { to: '/forward', label: 'Forward Test' },
       { to: '/results', label: 'Results' },
       { to: '/compare', label: 'Compare' },
       { to: '/sweep', label: 'Parameter Sweep' },
@@ -118,6 +120,7 @@ export function App() {
             <Route path="/diagnostics" element={<DiagnosticsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/run" element={<RunStudyPage />} />
+            <Route path="/forward" element={<ForwardTestPage />} />
             <Route path="/results" element={<ResultsPage />} />
             <Route path="/compare" element={<ComparePage />} />
             <Route path="/sweep" element={<SweepPage />} />

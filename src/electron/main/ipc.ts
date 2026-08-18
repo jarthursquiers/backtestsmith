@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from 'node:fs'
 import { basename } from 'node:path'
 import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import {
   buildAuthorizeUrl,
   exchangeAuthorizationCode,
@@ -9,7 +9,17 @@ import {
 } from '../../data/schwab/auth.js'
 import type { SchwabBackfillRequest, SchwabBackfillResult } from '../../shared/schwab.js'
 import type { ChainSummary, ReconstructRequest, ReconstructResponse } from '../../shared/butterfly.js'
-import { easternToTimestamp, marketDateOf, parseTimeOfDay, sessionClose } from '../../core/time/marketTime.js'
+import {
+  easternToTimestamp,
+  addCalendarDays,
+  isTradingDay,
+  marketDateOf,
+  nextTradingDay,
+  parseTimeOfDay,
+  previousTradingDay,
+  sessionClose,
+  tradingDaysBetween
+} from '../../core/time/marketTime.js'
 import { availableRoots, buildButterfly } from '../../backtest/buildButterfly.js'
 import { reconstructButterfly } from '../../backtest/reconstruct.js'
 import { computeExcursions } from '../../backtest/excursions.js'
@@ -54,7 +64,6 @@ import {
 } from '../../backtest/exits.js'
 import type { MissingDataPolicy } from '../../domain/butterfly.js'
 import { parseUnderlyingCsv } from '../../data/csv/csvImport.js'
-import { tradingDaysBetween } from '../../core/time/marketTime.js'
 import type {
   CsvImportOptions,
   CsvImportResult,
@@ -67,11 +76,83 @@ import { IPC, type AppInfo, type IpcResult } from '../../shared/ipc.js'
 import { createLogger, logStore, type LogLevel } from '../../services/logger.js'
 import type { QueueStats } from '../../data/requestQueue.js'
 import { getServices } from './services.js'
+import type {
+  CreateForwardTestRequest,
+  ForwardRunPlan,
+  ForwardTestDetail,
+  ForwardTestSummary
+} from '../../shared/forwardTest.js'
+import type { ForwardTestRecord } from '../../database/forwardTestStore.js'
+import type { TradeResult } from '../../shared/trade.js'
+import { planForwardRange } from '../../backtest/forwardTest.js'
 
 const log = createLogger('ipc')
 
 /** Only one study may run at a time; a second would contend for the same queue. */
 let activeStudy: AbortController | null = null
+
+/** Dates advance during a forward test; every other assumption is immutable. */
+function lockedConfigPayload(config: StudyConfig): Omit<StudyConfig, 'from' | 'to'> {
+  const { from: _from, to: _to, ...locked } = config
+  return locked
+}
+
+function lockedConfigHash(config: StudyConfig): string {
+  return createHash('sha256').update(JSON.stringify(lockedConfigPayload(config))).digest('hex')
+}
+
+function latestMatureEntryDate(config: StudyConfig, now = Date.now()): string {
+  const lastCompleteSession = previousTradingDay(marketDateOf(now))
+  const maximumExpirationDte = config.targetDte + (config.maxDeviation ?? 3)
+  const candidate = addCalendarDays(lastCompleteSession, -maximumExpirationDte)
+  return isTradingDay(candidate) ? candidate : previousTradingDay(candidate)
+}
+
+function forwardSummary(
+  record: ForwardTestRecord,
+  runs: Awaited<ReturnType<AppServices['forwardTests']['runs']>>
+): ForwardTestSummary {
+  const completedSessions = runs.reduce((sum, run) => sum + run.sessions, 0)
+  const acceptedEntries = runs.reduce((sum, run) => sum + run.acceptedEntries, 0)
+  return {
+    forwardTestId: record.forwardTestId,
+    name: record.name,
+    createdAt: record.createdAt,
+    startDate: record.startDate,
+    targetSessions: record.targetSessions,
+    state: record.state,
+    config: record.config,
+    configHash: record.configHash,
+    appVersion: record.appVersion,
+    ...(record.gitCommit ? { gitCommit: record.gitCommit } : {}),
+    completedSessions,
+    acceptedEntries,
+    skippedSessions: runs.reduce((sum, run) => sum + run.skippedSessions, 0),
+    runCount: runs.length,
+    latestMatureEntryDate: latestMatureEntryDate(record.config),
+    ...(runs.at(-1) ? { lastCompletedDate: runs.at(-1)!.to } : {})
+  }
+}
+
+async function loadForwardDetail(services: AppServices, forwardTestId: string): Promise<ForwardTestDetail | null> {
+  const record = await services.forwardTests.load(forwardTestId)
+  if (!record) return null
+  const runs = await services.forwardTests.runs(forwardTestId)
+  const trades: TradeResult[] = []
+  for (const linked of runs) {
+    const run = await services.studies.load(linked.runId)
+    if (run) trades.push(...run.trades)
+  }
+  const summaries: ManagementSummary[] = record.config.managements.map((id) => {
+    const managed = trades.filter((trade) => trade.strategyId === id)
+    return {
+      strategyId: id,
+      strategyLabel: managed[0]?.strategyLabel ?? id,
+      metrics: computeMetrics(managed)
+    }
+  })
+  return { test: forwardSummary(record, runs), runs, summaries }
+}
 
 /**
  * Data access for the study runner.
@@ -244,6 +325,123 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   handle(IPC.massiveGetContracts, (query: ContractQuery) => services.provider.getContracts(query))
   handle(IPC.massiveGetOptionBars, (query: BarQuery) => services.provider.getOptionBars(query))
   handle(IPC.massiveGetUnderlyingBars, (query: BarQuery) => services.provider.getUnderlyingBars(query))
+
+  // --- locked forward tests -------------------------------------------------
+  handle(IPC.forwardTestCreate, async (request: CreateForwardTestRequest): Promise<ForwardTestDetail> => {
+    const source = await services.studies.load(request.sourceRunId)
+    if (!source) throw new Error(`Source study ${request.sourceRunId} was not found.`)
+
+    const name = request.name.trim()
+    if (!name) throw new Error('Give the forward test a name before locking it.')
+    if (name.length > 120) throw new Error('Forward-test names must be 120 characters or fewer.')
+    if (!Number.isInteger(request.targetSessions) || request.targetSessions < 10 || request.targetSessions > 252) {
+      throw new Error('Target sessions must be a whole number between 10 and 252.')
+    }
+    const managements = [...new Set(request.managements)]
+    if (managements.length === 0) throw new Error('Select at least one management method to lock.')
+    const unavailable = managements.filter((id) => !source.config.managements.includes(id))
+    if (unavailable.length > 0) {
+      throw new Error(`The source study did not run these management methods: ${unavailable.join(', ')}.`)
+    }
+
+    const createdAt = Date.now()
+    const startDate = nextTradingDay(marketDateOf(createdAt))
+    const config: StudyConfig = {
+      ...source.config,
+      from: startDate,
+      to: startDate,
+      managements
+    }
+    const record: ForwardTestRecord = {
+      forwardTestId: randomBytes(8).toString('hex'),
+      name,
+      createdAt,
+      startDate,
+      targetSessions: request.targetSessions,
+      state: 'active',
+      config,
+      configHash: lockedConfigHash(config),
+      appVersion: source.appVersion,
+      ...(source.gitCommit ? { gitCommit: source.gitCommit } : {})
+    }
+    await services.forwardTests.create(record)
+    return (await loadForwardDetail(services, record.forwardTestId))!
+  })
+
+  handle(IPC.forwardTestList, async (): Promise<ForwardTestSummary[]> => {
+    const records = await services.forwardTests.list()
+    return Promise.all(records.map(async (record) => forwardSummary(record, await services.forwardTests.runs(record.forwardTestId))))
+  })
+
+  handle(IPC.forwardTestLoad, (forwardTestId: string) => loadForwardDetail(services, forwardTestId))
+
+  handle(IPC.forwardTestPlan, async (forwardTestId: string, through: string): Promise<ForwardRunPlan> => {
+    const record = await services.forwardTests.load(forwardTestId)
+    if (!record) throw new Error(`Forward test ${forwardTestId} was not found.`)
+    if (record.state === 'complete') throw new Error('This forward test has already reached its session target.')
+
+    const runs = await services.forwardTests.runs(forwardTestId)
+    const range = planForwardRange({
+      startDate: record.startDate,
+      ...(runs.at(-1) ? { lastCompletedDate: runs.at(-1)!.to } : {}),
+      completedSessions: runs.reduce((sum, run) => sum + run.sessions, 0),
+      targetSessions: record.targetSessions,
+      through,
+      latestCompletedDate: latestMatureEntryDate(record.config)
+    })
+    return {
+      forwardTestId,
+      ...range,
+      config: { ...record.config, from: range.from, to: range.to }
+    }
+  })
+
+  handle(IPC.forwardTestAttachRun, async (forwardTestId: string, runId: string): Promise<ForwardTestDetail> => {
+    const record = await services.forwardTests.load(forwardTestId)
+    if (!record) throw new Error(`Forward test ${forwardTestId} was not found.`)
+    const linked = await services.forwardTests.runs(forwardTestId)
+    if (linked.some((run) => run.runId === runId)) return (await loadForwardDetail(services, forwardTestId))!
+    if (record.state === 'complete') throw new Error('This forward test is complete and cannot accept another run.')
+
+    const run = await services.studies.load(runId)
+    if (!run) throw new Error(`Study run ${runId} was not found.`)
+    if (lockedConfigHash(run.config) !== record.configHash) {
+      throw new Error('The completed run does not match the locked configuration and was not attached.')
+    }
+    if (run.appVersion !== record.appVersion || (record.gitCommit && run.gitCommit !== record.gitCommit)) {
+      throw new Error(
+        `The completed run used app ${run.appVersion}${run.gitCommit ? ` (${run.gitCommit})` : ''}, ` +
+          `but this lock requires ${record.appVersion}${record.gitCommit ? ` (${record.gitCommit})` : ''}. ` +
+          'Create a new forward test after an engine update.'
+      )
+    }
+
+    const expectedFrom = linked.at(-1) ? nextTradingDay(linked.at(-1)!.to) : record.startDate
+    if (run.config.from !== expectedFrom) {
+      throw new Error(`The next forward batch must begin on ${expectedFrom}, not ${run.config.from}.`)
+    }
+    const sessions = tradingDaysBetween(run.config.from, run.config.to).length
+    const remaining = record.targetSessions - linked.reduce((sum, item) => sum + item.sessions, 0)
+    if (sessions < 1 || sessions > remaining) {
+      throw new Error(`The completed run contains ${sessions} sessions but only ${remaining} remain in the lock.`)
+    }
+    if (run.entriesAttempted !== sessions) {
+      throw new Error(
+        `The run evaluated ${run.entriesAttempted} of ${sessions} planned sessions. ` +
+          'It may have been cancelled, so it was not attached.'
+      )
+    }
+
+    await services.forwardTests.attachRun(
+      forwardTestId,
+      runId,
+      run.config.from,
+      run.config.to,
+      sessions,
+      sessions === remaining
+    )
+    return (await loadForwardDetail(services, forwardTestId))!
+  })
 
   // --- studies --------------------------------------------------------------
   handle(IPC.studyPreflight, (config: StudyConfig): Promise<StudyPreflight> =>

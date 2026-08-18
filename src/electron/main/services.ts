@@ -13,6 +13,7 @@ import type { OptionsHistoricalDataProvider } from '../../data/provider.js'
 import { Database } from '../../database/duckdb.js'
 import { MarketDataStore } from '../../database/marketDataStore.js'
 import { StudyStore } from '../../database/studyStore.js'
+import { ForwardTestStore } from '../../database/forwardTestStore.js'
 import type { CacheStats } from '../../shared/cache.js'
 import { createLogger, logStore } from '../../services/logger.js'
 import { SecretStore } from '../../services/secrets.js'
@@ -44,6 +45,7 @@ export interface AppServices {
   database: Database
   store: MarketDataStore
   studies: StudyStore
+  forwardTests: ForwardTestStore
   dataDirectory: string
   cacheStats(): Promise<CacheStats>
   applySettings(): void
@@ -95,6 +97,7 @@ export async function initServices(): Promise<AppServices> {
   await database.open()
   const store = new MarketDataStore(database)
   const studies = new StudyStore(database)
+  const forwardTests = new ForwardTestStore(database)
 
   const thetaClient = new ThetaDataClient(
     thetaSecrets.getApiKey() ?? '',
@@ -133,6 +136,7 @@ export async function initServices(): Promise<AppServices> {
     database,
     store,
     studies,
+    forwardTests,
     dataDirectory,
     async cacheStats(): Promise<CacheStats> {
       let bytes = 0

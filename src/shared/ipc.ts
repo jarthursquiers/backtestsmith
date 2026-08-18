@@ -24,6 +24,12 @@ import type { QueueStats } from './queue.js'
 import type { LogLevel, LogRecord } from './logging.js'
 import type { SecretStatus } from './secrets.js'
 import type { DeepPartial, Settings } from './settings.js'
+import type {
+  CreateForwardTestRequest,
+  ForwardRunPlan,
+  ForwardTestDetail,
+  ForwardTestSummary
+} from './forwardTest.js'
 
 /**
  * Contract between the Electron main process (which owns all data access and,
@@ -65,6 +71,12 @@ export const IPC = {
   studyLoad: 'study:load',
   studyDelete: 'study:delete',
   studyProgressEvent: 'study:progress:event',
+
+  forwardTestCreate: 'forward-test:create',
+  forwardTestList: 'forward-test:list',
+  forwardTestLoad: 'forward-test:load',
+  forwardTestPlan: 'forward-test:plan',
+  forwardTestAttachRun: 'forward-test:attach-run',
 
   parityValidate: 'parity:validate',
 
@@ -163,6 +175,16 @@ export interface AppApi {
     exportTrades(runId: string): Promise<string | null>
     /** Writes the full study JSON including config and caveats. */
     exportJson(runId: string): Promise<string | null>
+  }
+  forwardTest: {
+    /** Locks a prior study's entry assumptions and selected management rules. */
+    create(request: CreateForwardTestRequest): Promise<ForwardTestDetail>
+    list(): Promise<ForwardTestSummary[]>
+    load(forwardTestId: string): Promise<ForwardTestDetail | null>
+    /** Produces the next contiguous, immutable-config batch through this date. */
+    plan(forwardTestId: string, through: string): Promise<ForwardRunPlan>
+    /** Links a completed ordinary study run after validating the lock and chronology. */
+    attachRun(forwardTestId: string, runId: string): Promise<ForwardTestDetail>
   }
   sweep: {
     /** Cost of a sweep before running it. */

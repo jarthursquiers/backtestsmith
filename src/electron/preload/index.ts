@@ -62,6 +62,13 @@ const api: AppApi = {
     exportTrades: (runId) => invoke(IPC.studyExportTrades, runId),
     exportJson: (runId) => invoke(IPC.studyExportJson, runId)
   },
+  forwardTest: {
+    create: (request) => invoke(IPC.forwardTestCreate, request),
+    list: () => invoke(IPC.forwardTestList),
+    load: (forwardTestId) => invoke(IPC.forwardTestLoad, forwardTestId),
+    plan: (forwardTestId, through) => invoke(IPC.forwardTestPlan, forwardTestId, through),
+    attachRun: (forwardTestId, runId) => invoke(IPC.forwardTestAttachRun, forwardTestId, runId)
+  },
   sweep: {
     estimate: (axes) => invoke(IPC.sweepEstimate, axes),
     run: (base, axes, objective) => invoke(IPC.sweepRun, base, axes, objective)

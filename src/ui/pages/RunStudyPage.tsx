@@ -47,8 +47,9 @@ const DEFAULT_SELECTION = MANAGEMENT_OPTIONS.filter((o) => o.group !== 'Trailing
 export function RunStudyPage() {
   const navigate = useNavigate()
 
-  const [from, setFrom] = useState(shiftDate(todayEastern(), -90))
-  const [to, setTo] = useState(shiftDate(todayEastern(), -7))
+  const defaultTo = shiftDate(todayEastern(), -7)
+  const [from, setFrom] = useState(shiftDate(defaultTo, -365))
+  const [to, setTo] = useState(defaultTo)
   const [entryTime, setEntryTime] = useState('09:35')
   const [entryWindow, setEntryWindow] = useState('15')
   const [emaPeriod, setEmaPeriod] = useState('9')

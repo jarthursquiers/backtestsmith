@@ -21,7 +21,7 @@ const log = createLogger('database')
  */
 
 /** Bumped whenever the schema changes; migrations run in order on open. */
-const SCHEMA_VERSION = 4
+const SCHEMA_VERSION = 5
 
 const MIGRATIONS: { version: number; statements: string[] }[] = [
   {
@@ -233,6 +233,38 @@ const MIGRATIONS: { version: number; statements: string[] }[] = [
       `ALTER TABLE option_bars ADD COLUMN IF NOT EXISTS ask DOUBLE`,
       `ALTER TABLE option_bars ADD COLUMN IF NOT EXISTS bid_size DOUBLE`,
       `ALTER TABLE option_bars ADD COLUMN IF NOT EXISTS ask_size DOUBLE`
+    ]
+  },
+  {
+    /*
+     * Prospective tests are immutable configuration locks linked to ordinary
+     * study runs. Keeping each batch as a study run preserves all trade-level
+     * audit data while this small ledger enforces chronology and continuity.
+     */
+    version: 5,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS forward_tests (
+        forward_test_id VARCHAR PRIMARY KEY,
+        name VARCHAR NOT NULL,
+        created_at BIGINT NOT NULL,
+        start_date VARCHAR NOT NULL,
+        target_sessions INTEGER NOT NULL,
+        state VARCHAR NOT NULL,
+        config_json VARCHAR NOT NULL,
+        config_hash VARCHAR NOT NULL,
+        app_version VARCHAR NOT NULL,
+        git_commit VARCHAR
+      )`,
+      `CREATE TABLE IF NOT EXISTS forward_test_runs (
+        forward_test_id VARCHAR NOT NULL,
+        run_id VARCHAR UNIQUE NOT NULL,
+        from_date VARCHAR NOT NULL,
+        to_date VARCHAR NOT NULL,
+        session_count INTEGER NOT NULL,
+        created_at BIGINT NOT NULL,
+        PRIMARY KEY (forward_test_id, run_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_forward_runs_test ON forward_test_runs (forward_test_id, from_date)`
     ]
   }
 ]
