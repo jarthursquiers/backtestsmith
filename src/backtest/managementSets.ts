@@ -99,6 +99,22 @@ export function managementCatalogDrift(): { missingBuilder: string[]; missingCat
 }
 
 /**
+ * Sweep-generated targets and stops are not limited to the curated catalogue.
+ *
+ * The catalogue remains the finite set shown as checkboxes on an ordinary
+ * study, while a parameter sweep may legitimately ask for tp40, tp400, sl35,
+ * or a decimal threshold. Keeping this parser here preserves strict rejection
+ * for every other unknown id.
+ */
+function dynamicManagement(id: string): ExitStrategy | null {
+  const match = /^(tp|sl)(\d+(?:\.\d+)?)$/.exec(id)
+  if (!match) return null
+  const value = Number(match[2])
+  if (!Number.isFinite(value) || value <= 0) return null
+  return match[1] === 'tp' ? profitTarget(value) : stopLoss(value)
+}
+
+/**
  * Resolves ids into strategies, rejecting unknown ones rather than skipping.
  *
  * The catalogue id is forced onto the resolved strategy. Each rule derives an id
@@ -114,8 +130,8 @@ export function managementCatalogDrift(): { missingBuilder: string[]; missingCat
 export function buildManagementSet(ids: readonly string[]): ExitStrategy[] {
   return ids.map((id) => {
     const builder = BUILDERS[id]
-    if (!builder) throw new Error(`Unknown management method "${id}"`)
-    const strategy = builder()
+    const strategy = builder ? builder() : dynamicManagement(id)
+    if (!strategy) throw new Error(`Unknown management method "${id}"`)
     return strategy.id === id ? strategy : { ...strategy, id }
   })
 }

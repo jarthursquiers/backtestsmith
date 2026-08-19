@@ -145,8 +145,9 @@ export function RunStudyPage() {
         <Card title="Execution assumptions" subtitle="Recorded with the run, since they change the numbers">
           <div className="mb-3">
             <Notice tone="info">
-              Safety checks are always on: entries require fresh same-minute prices for all three legs, must fill
-              inside the entry window, and every synthetic mark must remain between zero and the wing width.
+              Safety checks are always on: entries must fill inside the entry window, carried quotes cannot exceed
+              the configured age, and every synthetic mark must remain between zero and the wing width. Strict mode
+              requires fresh same-minute prices for all three legs.
             </Notice>
           </div>
           <div className="grid gap-3 md:grid-cols-4">

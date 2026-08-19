@@ -117,7 +117,9 @@ export function studyToJson(run: StudyRunResult): string {
         'Results use one-minute OPRA NBBO quote snapshots supplied by ThetaData. Option legs are marked at the bid/ask midpoint, with configured slippage applied to simulated entry and exit fills; fills are estimates rather than guaranteed executions.',
         'Exits marked ambiguous could not be established from minute bars; the adverse outcome was assumed.',
         'Marks outside the static 0-to-wing-width butterfly bounds are rejected and counted as unpriced minutes.',
-        'Entries require fresh same-minute prices for all three legs inside the configured entry window.',
+        run.config.pricing.missingDataMode === 'strict'
+          ? 'Entries require fresh same-minute prices for all three legs inside the configured entry window.'
+          : `At entry, each leg's most recent NBBO quote may be carried forward by up to ${run.config.pricing.maxStaleMinutes} minute(s). The accepted package minute and every leg quote timestamp and age are recorded; future quotes are never applied to an earlier fill.`,
         'Sample sizes here are small enough that differences between management methods may not be distinguishable from chance.'
       ]
     },

@@ -482,10 +482,32 @@ describe('entry window', () => {
     }
   })
 
-  it('does not use a carried-forward leg to establish an entry', async () => {
-    // Prints every 5 minutes: the old engine entered at 09:36 using 09:35
-    // prices. Entry execution now requires all three legs in the same minute.
+  it('uses short carried-forward quotes at entry when that policy is configured', async () => {
+    // Prints every 5 minutes. At the requested 09:36 entry, the most recent
+    // quotes are from 09:35 and remain admissible under the 5-minute policy.
     const outcome = await runStudy({ ...sparseConfig, entryWindowMinutes: 0 }, sparseSource(5))
+    expect(outcome.series.length).toBeGreaterThan(0)
+
+    for (const series of outcome.series) {
+      expect(series.entryAudit?.stale).toBe(true)
+      expect(series.entryAudit?.maxLegAgeMs).toBe(60_000)
+      expect(series.warnings.join(' ')).toMatch(/carried-forward leg/)
+    }
+  })
+
+  it('still requires same-minute entry quotes in strict mode', async () => {
+    const sparse = sparseSource(5)
+    // Keep real index minutes available so this test reaches butterfly entry
+    // reconstruction rather than failing earlier during parity estimation.
+    const source = makeSource({ getOptionBars: sparse.getOptionBars })
+    const outcome = await runStudy({
+      ...sparseConfig,
+      from: '2025-06-02',
+      to: '2025-06-02',
+      entryWindowMinutes: 0,
+      pricing: { ...sparseConfig.pricing, missingDataMode: 'strict' }
+    }, source)
+
     expect(outcome.series).toHaveLength(0)
     expect(outcome.skipped.some((s) => /fresh same-minute prices/.test(s.reason))).toBe(true)
   })

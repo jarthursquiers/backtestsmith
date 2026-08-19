@@ -183,8 +183,11 @@ export function reconstructButterfly(input: ReconstructInput): ButterflySeries {
     })
   }
 
-  // An entry is accepted only inside the declared fill window, from three
-  // same-minute prints, and at a price consistent with a defined-risk fly.
+  // An entry is accepted only inside the declared fill window and at a price
+  // consistent with a defined-risk fly. Strict entry requires three quotes in
+  // that minute; carry-forward may use earlier quotes within its configured
+  // age limit. The accepted minute is always the package entry timestamp, so a
+  // later quote is never pulled backward into an earlier fill.
   const entryDeadline = input.entryDeadlineTimestamp ?? exitTimestamp
   const requireFreshEntry = input.requireFreshEntry ?? false
   const invalidPriceSamples: InvalidButterflyPrice[] = []

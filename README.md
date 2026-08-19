@@ -232,6 +232,13 @@ common. Two policies are available:
 - **Carry forward** - the last observed price may be reused for a configurable
   number of minutes, after which the minute goes unpriced.
 
+The selected policy also applies at entry. In carry-forward mode, a package may
+therefore fill at 09:36 from leg quotes observed at 09:35/09:36/09:35, provided
+the configured age limit permits it. The entry is recorded at 09:36, with every
+leg's original timestamp and age preserved; a future quote is never assigned to
+an earlier fill. Strict mode continues to require all three quotes in the same
+minute.
+
 No value is ever interpolated or invented. A minute that cannot be priced
 produces no observation and is counted against the trade's data quality instead.
 Every trade therefore carries coverage (minutes priced), freshness (minutes where
@@ -487,10 +494,18 @@ Two details make the answers trustworthy:
 
 Any configuration axis can be swept, and the cost depends on which:
 
+The Parameter Sweep screen has explicit start, end, and increment controls for
+target DTE and fixed wing width. Enabling both runs their Cartesian product as
+one sweep - for example, DTE 3 through 9 by 2 and widths 10 through 30 by 5
+produce 20 entry combinations in one queued run and one results table. The live
+estimate shows that combination count before the run starts.
+
 - **Management axes are nearly free.** Profit targets and stops run against an
   already-reconstructed price path, so a hundred targets cost one data pass and a
   hundred cheap simulations. They fold into the management set rather than
-  multiplying the run count.
+  multiplying the run count. Sweep-generated numeric thresholds are not limited
+  to the curated checkboxes used by ordinary studies, so values such as a +400%
+  target or -35% stop are valid.
 - **Entry axes force a refetch.** Target DTE, wing width, entry time, and
   placement change which contracts are traded, so each combination reconstructs
   from scratch.

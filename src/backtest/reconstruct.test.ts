@@ -321,6 +321,36 @@ describe('missing data handling', () => {
     expect(series.warnings.join(' ')).toMatch(/first fill was 1 minute/)
   })
 
+  it('timestamps a staggered carried entry at the latest leg minute', () => {
+    const legs = legsForValues(entry, [2, 3])
+    const staggered = {
+      // The lower quote arrives one minute after the other two. At that later
+      // minute the center and upper quotes are carried forward, never backward.
+      lower: legs.lower.slice(1),
+      center: legs.center.slice(0, 1),
+      upper: legs.upper.slice(0, 1)
+    }
+    const series = reconstructButterfly({
+      definition: DEF,
+      legBars: staggered,
+      entryTimestamp: entry,
+      entryDeadlineTimestamp: entry + 60_000,
+      requireFreshEntry: false,
+      exitTimestamp: entry + 60_000,
+      pricing: { model: 'close', slippage: 0, missingData: { mode: 'carryForward', maxStaleMinutes: 1 } }
+    })
+
+    expect(series.entryTimestamp).toBe(entry + 60_000)
+    expect(series.entryAudit).toMatchObject({
+      timestamp: entry + 60_000,
+      stale: true,
+      maxLegAgeMs: 60_000,
+      lower: { observedAt: entry + 60_000, ageMs: 0 },
+      center: { observedAt: entry, ageMs: 60_000 },
+      upper: { observedAt: entry, ageMs: 60_000 }
+    })
+  })
+
   it('rejects an exit before entry', () => {
     const legs = legsForValues(entry, [2])
     expect(() =>

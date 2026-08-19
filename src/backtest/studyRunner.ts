@@ -730,7 +730,11 @@ export async function runStudy(
         underlyingBars,
         entryTimestamp: filledAt,
         entryDeadlineTimestamp: entryTimestamp + windowMinutes * 60_000,
-        requireFreshEntry: true,
+        // Entry follows the same missing-data policy the user selected for the
+        // rest of the path. Under carry-forward, the package timestamp remains
+        // the accepted minute and every older leg retains its observedAt/ageMs
+        // audit trail; no future quote is pulled backward into an earlier fill.
+        requireFreshEntry: config.pricing.missingDataMode === 'strict',
         pricing
       })
     } catch (error) {

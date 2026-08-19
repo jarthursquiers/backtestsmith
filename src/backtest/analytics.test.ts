@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ButterflyDefinition } from '../domain/butterfly.js'
 import type { TradeResult } from '../shared/trade.js'
 import type { StudyConfig } from '../shared/study.js'
+import { valuesFromRange } from '../shared/sweep.js'
 import {
   analyzeConditionalPaths,
   analyzeTentApproach,
@@ -317,6 +318,13 @@ describe('parameter sweep', () => {
     expect(parseValueList('5, 5, 5')).toEqual([5])
     expect(() => parseValueList('abc')).toThrow(/not a number/)
     expect(() => parseValueList('1-5:0')).toThrow(/Step must be positive/)
+  })
+
+  it('expands explicit start/end/increment ranges for the sweep form', () => {
+    expect(valuesFromRange({ start: 3, end: 10, increment: 2 })).toEqual([3, 5, 7, 9])
+    expect(valuesFromRange({ start: 10, end: 20, increment: 2.5 })).toEqual([10, 12.5, 15, 17.5, 20])
+    expect(() => valuesFromRange({ start: 10, end: 5, increment: 1 })).toThrow(/end/)
+    expect(() => valuesFromRange({ start: 1, end: 5, increment: 0 })).toThrow(/increment/)
   })
 })
 

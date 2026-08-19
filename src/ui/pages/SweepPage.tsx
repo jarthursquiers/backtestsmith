@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { StudyConfig, StudyProgress } from '../../shared/study.js'
-import type { SweepAxis, SweepResult } from '../../shared/sweep.js'
+import { valuesFromRange, type SweepAxis, type SweepResult } from '../../shared/sweep.js'
 import {
   buildStudyConfig,
   DEFAULT_STRATEGY_ID,
@@ -51,6 +51,64 @@ const AXES: {
   { name: 'maxStaleMinutes', label: 'Max stale minutes', kind: 'entry', placeholder: '1, 5, 15' }
 ]
 
+type RangeAxisName = 'targetDte' | 'wingWidth'
+
+interface RangeInput {
+  enabled: boolean
+  start: string
+  end: string
+  increment: string
+}
+
+const RANGE_AXES: {
+  name: RangeAxisName
+  label: string
+  minimum: number
+  integer: boolean
+  defaults: Omit<RangeInput, 'enabled'>
+}[] = [
+  {
+    name: 'targetDte',
+    label: 'Target DTE range',
+    minimum: 1,
+    integer: true,
+    defaults: { start: '3', end: '14', increment: '1' }
+  },
+  {
+    name: 'wingWidth',
+    label: 'Wing-width range',
+    minimum: 5,
+    integer: false,
+    defaults: { start: '10', end: '50', increment: '5' }
+  }
+]
+
+const RANGE_AXIS_NAMES = new Set<string>(RANGE_AXES.map((axis) => axis.name))
+
+function resolveRange(
+  definition: (typeof RANGE_AXES)[number],
+  input: RangeInput
+): { axis: SweepAxis | null; error: string | null } {
+  if (!input.enabled) return { axis: null, error: null }
+
+  try {
+    const values = valuesFromRange({
+      start: Number(input.start),
+      end: Number(input.end),
+      increment: Number(input.increment)
+    })
+    if (values.some((value) => value < definition.minimum)) {
+      return { axis: null, error: `${definition.label} values must be at least ${definition.minimum}.` }
+    }
+    if (definition.integer && values.some((value) => !Number.isInteger(value))) {
+      return { axis: null, error: `${definition.label} values and increment must be whole numbers.` }
+    }
+    return { axis: { name: definition.name, values }, error: null }
+  } catch (error) {
+    return { axis: null, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 /** Mirrors parseValueList in the engine so the estimate can be shown live. */
 function parseValues(input: string): number[] {
   const out: number[] = []
@@ -75,6 +133,10 @@ export function SweepPage() {
   const [to, setTo] = useState(shiftDate(todayEastern(), -7))
   const [objective, setObjective] = useState('totalPnl')
   const [inputs, setInputs] = useState<Record<string, string>>({ profitTarget: '25, 50, 100, 150, 200' })
+  const [rangeInputs, setRangeInputs] = useState<Record<RangeAxisName, RangeInput>>(() => ({
+    targetDte: { enabled: false, ...RANGE_AXES[0]!.defaults },
+    wingWidth: { enabled: false, ...RANGE_AXES[1]!.defaults }
+  }))
   const [progress, setProgress] = useState<StudyProgress | null>(null)
   const [results, setResults] = useState<SweepResult[]>([])
 
@@ -88,22 +150,49 @@ export function SweepPage() {
 
   /** Axes offered for the chosen strategy, plus any the user has already filled. */
   const availableAxes = useMemo(
-    () => AXES.filter((axis) => strategy.sweepAxes.includes(axis.name)),
+    () => AXES.filter((axis) =>
+      strategy.sweepAxes.includes(axis.name) && !RANGE_AXIS_NAMES.has(axis.name)
+    ),
     [strategy]
   )
 
-  const axes = useMemo((): SweepAxis[] =>
-    Object.entries(inputs)
+  const configuredRanges = useMemo(() =>
+    RANGE_AXES
+      .filter((definition) => strategy.sweepAxes.includes(definition.name))
+      .map((definition) => ({
+        definition,
+        input: rangeInputs[definition.name],
+        resolved: resolveRange(definition, rangeInputs[definition.name])
+      })),
+  [rangeInputs, strategy])
+
+  const rangeErrors = useMemo(
+    () => configuredRanges.flatMap(({ definition, resolved }) =>
+      resolved.error ? [`${definition.label}: ${resolved.error}`] : []
+    ),
+    [configuredRanges]
+  )
+
+  const axes = useMemo((): SweepAxis[] => [
+    ...configuredRanges.flatMap(({ resolved }) => resolved.axis ? [resolved.axis] : []),
+    ...Object.entries(inputs)
       .filter(([name]) => strategy.sweepAxes.includes(name))
       .map(([name, raw]) => ({ name, values: parseValues(raw) }))
-      .filter((a) => a.values.length > 0),
-  [inputs, strategy])
+      .filter((a) => a.values.length > 0)
+  ], [configuredRanges, inputs, strategy])
 
   const selectStrategy = (id: string): void => {
     const next = requireStrategy(id)
     setStrategyId(id)
     setParams(defaultStrategyParams(next))
     setResults([])
+  }
+
+  const updateRange = (name: RangeAxisName, patch: Partial<RangeInput>): void => {
+    setRangeInputs((previous) => ({
+      ...previous,
+      [name]: { ...previous[name], ...patch }
+    }))
   }
 
   const estimate = useMemo(() => {
@@ -153,7 +242,11 @@ export function SweepPage() {
               Cancel
             </Button>
           ) : (
-            <Button variant="primary" onClick={() => void run()} disabled={axes.length === 0}>
+            <Button
+              variant="primary"
+              onClick={() => void run()}
+              disabled={axes.length === 0 || rangeErrors.length > 0}
+            >
               Run sweep
             </Button>
           )
@@ -207,9 +300,83 @@ export function SweepPage() {
 
         <Card
           title="Axes"
-          subtitle="Leave an axis blank to hold it fixed. Values accept lists and ranges, e.g. 25, 50, 75-300:25"
+          subtitle="Enable DTE and wing-width ranges to run their full grid as one sweep. Leave anything else blank to hold it fixed."
         >
           <div className="space-y-3">
+            {configuredRanges.length > 0 && (
+              <div>
+                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+                  DTE × wing-width grid
+                </div>
+                <div className="grid gap-3 xl:grid-cols-2">
+                  {configuredRanges.map(({ definition, input, resolved }) => (
+                    <div key={definition.name} className="rounded-md border border-line-soft bg-surface-2 p-3">
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <label className="flex items-center gap-2 text-[11px] font-medium text-ink-dim">
+                          <input
+                            type="checkbox"
+                            checked={input.enabled}
+                            onChange={(event) => updateRange(definition.name, { enabled: event.target.checked })}
+                          />
+                          {definition.label}
+                        </label>
+                        {input.enabled && resolved.axis && (
+                          <Badge tone="accent">{fmtInt(resolved.axis.values.length)} values</Badge>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <Field label="Start">
+                          <Input
+                            type="number"
+                            min={definition.minimum}
+                            step={definition.integer ? 1 : 'any'}
+                            disabled={!input.enabled}
+                            value={input.start}
+                            onChange={(event) => updateRange(definition.name, { start: event.target.value })}
+                          />
+                        </Field>
+                        <Field label="End">
+                          <Input
+                            type="number"
+                            min={definition.minimum}
+                            step={definition.integer ? 1 : 'any'}
+                            disabled={!input.enabled}
+                            value={input.end}
+                            onChange={(event) => updateRange(definition.name, { end: event.target.value })}
+                          />
+                        </Field>
+                        <Field label="Increment">
+                          <Input
+                            type="number"
+                            min={definition.integer ? 1 : 0.01}
+                            step={definition.integer ? 1 : 'any'}
+                            disabled={!input.enabled}
+                            value={input.increment}
+                            onChange={(event) => updateRange(definition.name, { increment: event.target.value })}
+                          />
+                        </Field>
+                      </div>
+                      {input.enabled && resolved.axis && (
+                        <div className="num mt-2 text-[10px] text-ink-faint">
+                          {resolved.axis.values.slice(0, 12).join(', ')}
+                          {resolved.axis.values.length > 12
+                            ? `, …, ${resolved.axis.values.at(-1)}`
+                            : ''}
+                        </div>
+                      )}
+                      {input.enabled && resolved.error && (
+                        <div className="mt-2 text-[10px] text-loss">{resolved.error}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2 text-[10px] text-ink-faint">
+                  Enabled ranges replace the fixed values in the Strategy card. Enabling both creates every DTE ×
+                  wing-width combination and reports them together below.
+                </div>
+              </div>
+            )}
+
             {(['management', 'entry'] as const).map((kind) => (
               <div key={kind}>
                 <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
@@ -228,6 +395,10 @@ export function SweepPage() {
                 </div>
               </div>
             ))}
+
+            {rangeErrors.length > 0 && (
+              <Notice tone="error">{rangeErrors.join(' ')}</Notice>
+            )}
 
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <StatTile
