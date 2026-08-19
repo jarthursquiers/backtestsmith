@@ -29,6 +29,12 @@ export interface TradeResult {
   entryDebit: number
   /** Optional for compatibility with studies saved before price auditing existed. */
   entryAudit?: ButterflyPriceAudit
+  /**
+   * What the entry rule measured, e.g. the EMA and its distance, or the
+   * volatility gauge that set the wing width. Absent on studies saved before
+   * these were retained.
+   */
+  entryIndicators?: Record<string, number>
 
   exitTimestamp: number
   /** Value received, in price points, after exit slippage. */

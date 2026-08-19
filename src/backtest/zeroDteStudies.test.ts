@@ -17,11 +17,12 @@ import {
 import { preflightStudy, runStudy, type StudyDataSource } from './studyRunner.js'
 
 /**
- * End-to-end cover for the 0DTE opening range strategy.
+ * End-to-end cover for the same-session butterfly strategies.
  *
  * The synthetic market is deliberately generous - every minute of every leg is
- * priced - so that anything the study skips is a decision the *rules* made,
- * not an artefact of missing data.
+ * priced - so that anything a study skips is a decision the *rules* made, not
+ * an artefact of missing data. Both 0DTE strategies run against the identical
+ * market here, which is what makes the contrast between them meaningful.
  */
 
 const STRIKES = Array.from({ length: 121 }, (_, i) => 5700 + i * 5)
@@ -109,12 +110,16 @@ function makeSource(shapes: Record<string, SessionShape>, fallback: SessionShape
   }
 }
 
-function orbConfig(overrides: Partial<StudyConfig> = {}): StudyConfig {
-  const strategy = requireStrategy('orb-0dte-butterfly')
+function configFor(
+  strategyId: string,
+  params: Record<string, string | number | boolean> = {},
+  overrides: Partial<StudyConfig> = {}
+): StudyConfig {
+  const strategy = requireStrategy(strategyId)
   return {
     ...buildStudyConfig({
-      strategyId: strategy.id,
-      params: defaultStrategyParams(strategy),
+      strategyId,
+      params: { ...defaultStrategyParams(strategy), ...params },
       from: '2025-06-02',
       to: '2025-06-06',
       managements: ['hold', 'at1545', 'tp50', 'elapsed60m'],
@@ -123,6 +128,10 @@ function orbConfig(overrides: Partial<StudyConfig> = {}): StudyConfig {
     }),
     ...overrides
   }
+}
+
+function orbConfig(overrides: Partial<StudyConfig> = {}): StudyConfig {
+  return configFor('orb-0dte-butterfly', {}, overrides)
 }
 
 describe('the 0DTE opening range study', () => {
@@ -262,5 +271,99 @@ describe('the 0DTE opening range preflight', () => {
   it('passes when the minute history is there', async () => {
     const preflight = await preflightStudy(orbConfig(), makeSource({}, BEARISH_BREAK))
     expect(preflight.blockers).toEqual([])
+  })
+})
+
+describe('the 0DTE EMA direction study', () => {
+  /*
+   * The synthetic daily history closes at 6000 every session, so the 9 EMA sits
+   * at 6000 and the side is decided purely by where the index is at the entry
+   * minute. That makes the direction mapping the only thing under test here.
+   */
+  const above: SessionShape = () => 6030
+  const below: SessionShape = () => 5970
+
+  it('takes an upside call butterfly when SPX is above the EMA', async () => {
+    const outcome = await runStudy(
+      configFor('ema-0dte-butterfly', {}, { from: '2025-06-02', to: '2025-06-02' }),
+      makeSource({ '2025-06-02': above })
+    )
+
+    expect(outcome.skipped).toEqual([])
+    expect(outcome.series).toHaveLength(1)
+    const { definition } = outcome.series[0]!
+    expect(definition.direction).toBe('bullish')
+    expect(definition.optionType).toBe('call')
+    // An upside butterfly sits above the market.
+    expect(definition.lowerStrike).toBeGreaterThan(6030)
+  })
+
+  it('takes a downside put butterfly when SPX is below the EMA', async () => {
+    const outcome = await runStudy(
+      configFor('ema-0dte-butterfly', {}, { from: '2025-06-02', to: '2025-06-02' }),
+      makeSource({ '2025-06-02': below })
+    )
+
+    expect(outcome.series).toHaveLength(1)
+    const { definition } = outcome.series[0]!
+    expect(definition.direction).toBe('bearish')
+    expect(definition.optionType).toBe('put')
+    expect(definition.upperStrike).toBeLessThan(5970)
+  })
+
+  it('trades the entry session itself, on a Tuesday the old weekday set would have missed', async () => {
+    const outcome = await runStudy(
+      configFor('ema-0dte-butterfly', {}, { from: '2025-06-03', to: '2025-06-03' }),
+      makeSource({ '2025-06-03': above })
+    )
+
+    expect(outcome.series[0]!.definition.expiration).toBe('2025-06-03')
+    for (const trade of outcome.trades) {
+      expect(marketDateOf(trade.exitTimestamp)).toBe('2025-06-03')
+      expect(trade.exitDte).toBe(0)
+    }
+  })
+
+  it('enters at the configured time rather than waiting for a trigger', async () => {
+    const outcome = await runStudy(
+      configFor('ema-0dte-butterfly', { entryTime: '10:15' }, { from: '2025-06-02', to: '2025-06-02' }),
+      makeSource({ '2025-06-02': above })
+    )
+
+    expect(toEastern(outcome.series[0]!.entryTimestamp).toFormat('HH:mm')).toBe('10:15')
+  })
+
+  it('trades every session, unlike the breakout rule which needs a trigger', async () => {
+    const range = { from: '2025-06-02', to: '2025-06-06' }
+    const quiet = makeSource({}, NO_BREAK)
+
+    const ema = await runStudy(configFor('ema-0dte-butterfly', {}, range), quiet)
+    const orb = await runStudy(configFor('orb-0dte-butterfly', {}, range), quiet)
+
+    expect(ema.series.length).toBe(5)
+    // The identical market gives the breakout rule nothing to act on.
+    expect(orb.series.length).toBe(0)
+  })
+
+  it('sits out sessions where price is inside the minimum distance from the EMA', async () => {
+    const onTheAverage: SessionShape = () => 6001
+
+    const outcome = await runStudy(
+      configFor('ema-0dte-butterfly', { minimumDistance: 20 }, { from: '2025-06-02', to: '2025-06-02' }),
+      makeSource({ '2025-06-02': onTheAverage })
+    )
+
+    expect(outcome.series).toHaveLength(0)
+    expect(outcome.skipped[0]!.reason).toContain('no signal')
+  })
+
+  it('reverses every side when the direction is faded', async () => {
+    const outcome = await runStudy(
+      configFor('ema-0dte-butterfly', { mode: 'fade' }, { from: '2025-06-02', to: '2025-06-02' }),
+      makeSource({ '2025-06-02': above })
+    )
+
+    expect(outcome.series[0]!.definition.direction).toBe('bearish')
+    expect(outcome.series[0]!.definition.optionType).toBe('put')
   })
 })

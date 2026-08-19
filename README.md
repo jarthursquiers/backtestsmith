@@ -283,15 +283,80 @@ The shipped set:
 
 | Strategy | Entry | Expiration |
 | --- | --- | --- |
+| EMA swing butterfly, VIX-scaled width | Price against a daily EMA, with the wing width set by VIX | Target DTE, default 7 |
+| EMA direction 0DTE butterfly | Price against a daily EMA at a fixed morning time | Same session |
 | Opening range breakout 0DTE butterfly | First candle to close outside the session's opening range | Same session |
 | EMA direction swing butterfly | Price against a daily EMA at a fixed time | Target DTE, default 7 |
-| Fixed-time 0DTE butterfly | A set time, always one side. A control for the breakout study | Same session |
+| Fixed-time 0DTE butterfly | A set time, always one side. A control for the signal-driven studies | Same session |
+
+The two 0DTE strategies place identical structures and differ only in how they
+choose the side and the minute, which is what makes them directly comparable:
+run both over one range and any difference is attributable to the signal rather
+than to the trade construction.
 
 Every run stores `strategyId` and the parameter values it was built from, so a
 stored result can say what it was rather than leaving a reader to infer intent
 from a scattering of numbers. Parameters the chosen placement does not consult
 are dropped rather than recorded, so a config never implies a value the run
 never used.
+
+### Volatility-scaled wing width
+
+Any strategy can set its wing width from a volatility gauge instead of fixing
+it. The width is chosen per entry from bands over the gauge - by default 20
+points below VIX 17, 30 from 17 to 32, and 45 above - and the shipped
+**EMA swing butterfly, VIX-scaled width** is the 7 DTE study with that mode
+already selected.
+
+This is not the same question a wing-width sweep asks. A sweep asks which single
+width was best over the sample; a banded rule asks whether adapting the width to
+conditions beats any single width, and no number of swept values answers that.
+
+Bands are half-open and the last is unbounded, so every possible reading lands in
+exactly one band: `below: 17` means the 20-wide band covers everything under 17
+and a reading of exactly 17 belongs to the next band up. An invalid list - gapped,
+out of order, or with a bounded final band - fails the run rather than sizing
+some trades by a rule nobody wrote.
+
+The gauge is read at the entry minute, which is observable then. A missing
+reading carries forward from earlier in the same session, then falls back to the
+**previous** session's close; the entry day's close is never consulted, since
+that would be hours of hindsight applied to the size of every trade. A session
+with no reading at all is skipped rather than traded at a nominal width, because
+a run labelled VIX-scaled must not quietly contain trades that were not.
+
+The gauge ticker is a parameter rather than derived, since the cache is keyed by
+whatever name the data was imported under and guessing wrong would skip every
+session for a reason that looks like missing history. Each trade records the
+gauge level beside the width it produced, and both reach the trade CSV as
+`gauge_level` and `wing_width`.
+
+### EMA direction, 0DTE
+
+Compare SPX at the entry time against a daily EMA built only from sessions that
+had already closed. **Above the average takes a bullish upside call butterfly;
+below it takes a bearish downside put butterfly.** The near wing sits at the
+edge of the expected move, and the structure expires the same session.
+
+Unlike the breakout rule there is no trigger to wait for, so every session with
+a signal is traded and nothing is skipped for want of one. It also needs no
+intraday index bars: the EMA is built from daily closes and the entry level
+falls back to put-call parity, so it runs over any range with daily history.
+
+Two knobs are worth the attention:
+
+- **Minimum distance from the EMA** (default 0, meaning trade every session).
+  Early in the session price sits close to the previous close, so on days the
+  index is resting on the average the side is close to a coin flip. A positive
+  value sits those days out.
+- **Direction** can be inverted, for the same reason the breakout rule can be
+  faded: a butterfly pays where price *stops*, not where it goes, so "above the
+  EMA is bullish" and "above the EMA is bearish" are both defensible readings
+  and the data should settle it.
+
+The default entry time is 09:35, matching the swing study's convention rather
+than the breakout study's median entry near 09:55. If the two 0DTE studies are
+being compared directly, set them to the same clock time first.
 
 ### Opening range breakout, 0DTE
 

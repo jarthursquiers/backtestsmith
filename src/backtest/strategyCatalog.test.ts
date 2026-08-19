@@ -95,6 +95,56 @@ describe('strategy catalogue', () => {
   })
 })
 
+describe('the 0DTE EMA direction strategy', () => {
+  it('trades the entry session itself and admits every weekday expiration', () => {
+    const config = configFor('ema-0dte-butterfly')
+
+    expect(config.targetDte).toBe(0)
+    expect(config.maxDeviation).toBe(0)
+    expect(config.expirationWeekdays).toEqual([1, 2, 3, 4, 5])
+  })
+
+  it('maps above the EMA to bullish and below to bearish', () => {
+    const config = configFor('ema-0dte-butterfly')
+    expect(config.entry).toEqual({
+      type: 'ema',
+      period: 9,
+      minimumDistance: 0,
+      // The engine reads `invert: false` as "below the average is bearish",
+      // which is the stated rule. Asserting it here so a future change to the
+      // default cannot silently reverse every trade in the study.
+      invert: false
+    })
+  })
+
+  it('inverts the mapping when the direction is faded', () => {
+    const config = configFor('ema-0dte-butterfly', { mode: 'fade' })
+    expect(config.entry).toMatchObject({ type: 'ema', invert: true })
+  })
+
+  it('carries a minimum distance filter through to the entry rule', () => {
+    const config = configFor('ema-0dte-butterfly', { minimumDistance: 20 })
+    expect(config.entry).toMatchObject({ minimumDistance: 20 })
+  })
+
+  it('places the near wing at the edge of the expected move by default', () => {
+    const config = configFor('ema-0dte-butterfly')
+    expect(config.placement).toEqual({ type: 'expectedMove', buffer: 0, anchor: 'nearWingOutside' })
+  })
+
+  it('offers only management methods that can fire within one session', () => {
+    const strategy = requireStrategy('ema-0dte-butterfly')
+    expect(strategy.defaultManagements).toContain('at1545')
+    expect(strategy.defaultManagements).not.toContain('dte1')
+  })
+
+  it('describes itself without needing the catalogue', () => {
+    expect(describeConfig(configFor('ema-0dte-butterfly'))).toBe(
+      '9 EMA | 0DTE | 25-wide | expected move'
+    )
+  })
+})
+
 describe('the 0DTE opening range strategy', () => {
   it('targets the entry session itself and admits every weekday expiration', () => {
     const config = configFor('orb-0dte-butterfly')

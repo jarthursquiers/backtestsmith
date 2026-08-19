@@ -136,6 +136,7 @@ export function simulateTrade(
     ...(series.entryUnderlying !== undefined ? { entryUnderlying: series.entryUnderlying } : {}),
     entryDebit,
     ...(series.entryAudit ? { entryAudit: series.entryAudit } : {}),
+    ...(series.entryIndicators ? { entryIndicators: series.entryIndicators } : {}),
     exitTimestamp: exitObservation.timestamp,
     exitValue: netExitValue,
     ...(exitObservation.priceAudit ? { exitAudit: exitObservation.priceAudit } : {}),

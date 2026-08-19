@@ -544,6 +544,15 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     let lastSent = 0
     let lastLogged = 0
     let lastLoggedSession = -1
+    /*
+     * The last progress seen, so a failure can say where it happened. Reporting
+     * a failed run as 0 of 0 sessions told the reader nothing about whether it
+     * died in preparation, in preflight, or three hours into the entries.
+     */
+    let lastPhase: StudyProgress['phase'] = 'preparing'
+    let lastCompleted = 0
+    let lastTotal = 0
+    let lastDate: string | undefined
 
     try {
       const preparation = config.offlineOnly
@@ -567,6 +576,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
                   apiRequests: providerRequests() - requestsAtStart
                 }
                 const window = getWindow()
+                lastCompleted = update.completed
+                lastTotal = update.total
+                lastDate = update.currentDate
                 if (window && !window.isDestroyed()) {
                   window.webContents.send(IPC.studyProgressEvent, update)
                 }
@@ -598,7 +610,17 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           apiRequests: providerRequests() - requestsAtStart
         } satisfies StudyProgress)
       }
-      const preflight = await preflightStudy(config, source)
+      /*
+       * Preflight reads the cache and never the provider.
+       *
+       * It runs immediately after preparation, whose whole job is to fill that
+       * cache, and its own job is to report what is there. Letting it fetch
+       * meant it could sit for a minute issuing sequential upstream requests -
+       * one per sampled session - for exactly the data it exists to report as
+       * missing, which is both slow and self-defeating: the check would hang
+       * rather than tell you the gauge history was absent.
+       */
+      const preflight = await preflightStudy(config, buildStudySource(services, undefined, true))
       log.info('study preflight', {
         sessions: preflight.sessions,
         dailyBars: preflight.dailyBars,
@@ -624,6 +646,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         onProgress: (progress) => {
           const requests = providerRequests() - requestsAtStart
           const now = Date.now()
+
+          lastPhase = 'entries'
+          lastCompleted = progress.completed
+          lastTotal = progress.total
+          lastDate = progress.currentDate
 
           // One terminal line per session, not per stage, so the log stays
           // readable while still proving the run is alive.
@@ -699,8 +726,12 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       if (window && !window.isDestroyed()) {
         window.webContents.send(IPC.studyProgressEvent, {
           phase: 'failed',
-          completed: 0,
-          total: 0,
+          // Where it died, not a bare zero: the phase and the session reached
+          // are the first things anyone needs to diagnose a failed run.
+          completed: lastCompleted,
+          total: lastTotal,
+          ...(lastDate ? { currentDate: lastDate } : {}),
+          stage: `failed during ${lastPhase}`,
           tradesGenerated: 0,
           skipped: 0,
           elapsedMs: Date.now() - orchestrationStartedAt,

@@ -48,6 +48,61 @@ export type EntryConfig =
  */
 export type ExpectedMoveAnchor = 'nearestCenter' | 'nearWingOutside'
 
+/**
+ * One band of a volatility-scaled wing width.
+ *
+ * `below` is the exclusive upper bound of the band. The final band omits it and
+ * is open-ended, so every possible reading lands in exactly one band and there
+ * is no gauge level the rule has no answer for.
+ */
+export interface WingWidthBand {
+  below?: number
+  wingWidth: number
+}
+
+/**
+ * How a study decides how wide each butterfly is.
+ *
+ * A fixed width is one decision applied to every market. Scaling by a
+ * volatility gauge makes the structure's risk proportional to how much room the
+ * market is pricing - which is a different trade, not a tuned version of the
+ * same one, so it is expressed as a rule rather than as a swept parameter.
+ */
+export type WingWidthConfig =
+  | { type: 'fixed' }
+  | {
+      type: 'volatilityBands'
+      /**
+       * Ticker the gauge is cached under, e.g. I:VIX.
+       *
+       * Explicit rather than derived, because the cache is keyed by whatever
+       * name the data was imported under and guessing wrong would skip every
+       * session for a reason that looks like missing history.
+       */
+      ticker: string
+      /** Ascending by `below`; the last band must be open-ended. */
+      bands: WingWidthBand[]
+    }
+
+/** Human description of a band list, e.g. "20 under 17, 30 17-32, 45 at 32+". */
+export function describeBands(bands: readonly WingWidthBand[]): string {
+  return bands
+    .map((band, index) => {
+      const lower = index === 0 ? null : (bands[index - 1]?.below ?? null)
+      if (band.below === undefined) return `${band.wingWidth} at ${lower}+`
+      if (lower === null) return `${band.wingWidth} under ${band.below}`
+      return `${band.wingWidth} ${lower}-${band.below}`
+    })
+    .join(', ')
+}
+
+/** How wide a study's structures are, naming the rule when the width varies. */
+export function describeWingWidth(config: Pick<StudyConfig, 'wingWidth' | 'wingWidthRule'>): string {
+  const rule = config.wingWidthRule
+  if (!rule || rule.type === 'fixed') return `${config.wingWidth}-wide`
+  return `${rule.ticker}-scaled (${describeBands(rule.bands)})`
+}
+
 /** Where the butterfly is centred. */
 export type PlacementConfig =
   | { type: 'fixedDistance'; offsetPoints: number }
@@ -105,7 +160,16 @@ export interface StudyConfig {
   preferredRoot?: string
 
   placement: PlacementConfig
+  /**
+   * Wing width in underlying points.
+   *
+   * Used directly when `wingWidthRule` is absent or fixed, and as the recorded
+   * nominal width otherwise. The width each trade was actually built with is
+   * always recoverable from its own definition.
+   */
   wingWidth: number
+  /** Optional rule that resolves the wing width per entry. Fixed when absent. */
+  wingWidthRule?: WingWidthConfig
   quantity: number
 
   pricing: {
@@ -247,6 +311,20 @@ export function resolveIndexTicker(config: Pick<StudyConfig, 'underlying' | 'ind
   if (config.indexTicker && config.indexTicker.trim()) return config.indexTicker.trim().toUpperCase()
   const root = config.underlying.trim().toUpperCase()
   return root.startsWith('I:') ? root : `I:${root}`
+}
+
+/**
+ * The volatility gauge a study needs cached, if any.
+ *
+ * Returned separately from the index ticker because preparation, preflight, and
+ * the runner all need to know about it, and each deriving it from the placement
+ * rule independently is how the three end up disagreeing.
+ */
+export function resolveGaugeTicker(config: Pick<StudyConfig, 'wingWidthRule'>): string | null {
+  const rule = config.wingWidthRule
+  if (!rule || rule.type !== 'volatilityBands') return null
+  const ticker = rule.ticker.trim().toUpperCase()
+  return ticker === '' ? null : ticker
 }
 
 /** True when a study trades the session it enters on. */

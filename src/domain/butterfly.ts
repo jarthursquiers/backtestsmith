@@ -174,6 +174,13 @@ export interface ButterflySeries {
   /** Raw leg observations behind the accepted entry debit. */
   entryAudit?: ButterflyPriceAudit
   entryUnderlying?: number
+  /**
+   * Indicator values the entry rule saw, kept for after-the-fact analysis.
+   *
+   * Set by the study runner, not by reconstruction, which is why it is optional:
+   * a series built directly from three legs has no entry rule behind it.
+   */
+  entryIndicators?: Record<string, number>
   observations: ButterflyObservation[]
   quality: DataQuality
   pricing: PricingAssumptions

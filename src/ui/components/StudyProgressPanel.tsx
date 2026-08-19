@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { StudyProgress } from '../../shared/study.js'
 import { Badge, Card, Notice, StatTile } from './primitives.js'
 import { fmtInt } from '../lib/format.js'
+import { useQueueStats } from '../lib/hooks.js'
 
 /**
  * Live study status.
@@ -36,6 +37,7 @@ export function StudyProgressPanel() {
   /** Wall-clock tick, so elapsed keeps counting between provider updates. */
   const [, setTick] = useState(0)
   const lastUpdate = useRef<number>(Date.now())
+  const queue = useQueueStats()
 
   useEffect(() => {
     return window.api.study.onProgress((next) => {
@@ -58,6 +60,15 @@ export function StudyProgressPanel() {
   const sinceUpdate = Date.now() - lastUpdate.current
   const elapsed = (progress.elapsedMs ?? 0) + (running ? sinceUpdate : 0)
 
+  /*
+   * A long gap is only a provider wait when there is actually upstream work in
+   * flight. Saying so unconditionally sent readers looking for a network
+   * problem during phases that never touch the network - preflight reads the
+   * local cache, and a slow one means a slow query, not a slow provider.
+   */
+  const upstreamBusy = (queue?.inFlight ?? 0) > 0 || (queue?.queued ?? 0) > 0
+  const stalled = sinceUpdate > 30_000
+
   const reasons = Object.entries(progress.skipReasons ?? {}).sort((a, b) => b[1] - a[1])
   const everythingSkipped = progress.skipped > 0 && progress.tradesGenerated === 0
 
@@ -68,10 +79,12 @@ export function StudyProgressPanel() {
       actions={
         <div className="flex items-center gap-2">
           {running && (
-            <Badge tone={sinceUpdate > 30_000 ? 'warn' : 'accent'}>
-              {sinceUpdate > 30_000
-                ? `waiting for provider · ${Math.round(sinceUpdate / 1000)}s`
-                : 'running'}
+            <Badge tone={stalled ? 'warn' : 'accent'}>
+              {!stalled
+                ? 'running'
+                : upstreamBusy
+                  ? `waiting for provider · ${Math.round(sinceUpdate / 1000)}s`
+                  : `working · ${Math.round(sinceUpdate / 1000)}s`}
             </Badge>
           )}
           {progress.phase === 'done' && <Badge tone="gain">complete</Badge>}

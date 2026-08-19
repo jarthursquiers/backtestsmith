@@ -55,6 +55,15 @@ function ParamControl({
           onChange={(event) => onChange(event.target.value)}
         />
       )
+    case 'text':
+      return (
+        <Input
+          value={String(value ?? param.default)}
+          spellCheck={false}
+          {...(param.placeholder ? { placeholder: param.placeholder } : {})}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      )
     case 'choice':
       return (
         <Select value={String(value ?? param.default)} onChange={(event) => onChange(event.target.value)}>

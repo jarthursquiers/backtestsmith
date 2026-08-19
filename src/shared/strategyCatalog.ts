@@ -1,4 +1,12 @@
-import type { EntryConfig, ExpirationRule, PlacementConfig, StudyConfig } from './study.js'
+import {
+  describeWingWidth,
+  type EntryConfig,
+  type ExpirationRule,
+  type PlacementConfig,
+  type StudyConfig,
+  type WingWidthBand,
+  type WingWidthConfig
+} from './study.js'
 import {
   allManagementsFor,
   DEFAULT_MANAGEMENT_SET,
@@ -48,6 +56,7 @@ export type StrategyParam =
       step?: number
     })
   | (StrategyParamBase & { kind: 'time'; default: string })
+  | (StrategyParamBase & { kind: 'text'; default: string; placeholder?: string })
   | (StrategyParamBase & {
       kind: 'choice'
       default: string
@@ -66,7 +75,7 @@ export type StrategySlice = Pick<
   | 'maxDeviation'
   | 'placement'
   | 'wingWidth'
-> & { expirationWeekdays?: number[] }
+> & { expirationWeekdays?: number[]; wingWidthRule?: WingWidthConfig }
 
 export interface StrategyDefinition {
   id: string
@@ -172,14 +181,131 @@ const PLACEMENT_PARAMS: StrategyParam[] = [
   }
 ]
 
-const WING_WIDTH_PARAM: StrategyParam = {
-  key: 'wingWidth',
-  label: 'Wing width',
-  kind: 'number',
-  default: 25,
-  min: 5,
-  step: 5,
-  hint: 'SPX points from the centre to either wing'
+/**
+ * Wing width, either fixed or scaled by a volatility gauge.
+ *
+ * The banded form is expressed as two thresholds and three widths rather than
+ * as a free-form list, because that is the shape the rule is actually stated in
+ * ("20 under 17, 30 to 32, 45 above") and a generic band editor would be a lot
+ * of interface for a decision nobody makes in more than three steps. The engine
+ * accepts any number of bands; only this form is capped.
+ */
+const WING_WIDTH_PARAMS: StrategyParam[] = [
+  {
+    key: 'wingWidthMode',
+    label: 'Wing width',
+    kind: 'choice',
+    default: 'fixed',
+    options: [
+      { value: 'fixed', label: 'Fixed width' },
+      { value: 'vixBands', label: 'Scaled by VIX' }
+    ]
+  },
+  {
+    key: 'wingWidth',
+    label: 'Wing width',
+    kind: 'number',
+    default: 25,
+    min: 5,
+    step: 5,
+    hint: 'SPX points from the centre to either wing',
+    visibleWhen: { key: 'wingWidthMode', equals: 'fixed' }
+  },
+  {
+    key: 'gaugeTicker',
+    label: 'Volatility ticker',
+    kind: 'text',
+    default: 'I:VIX',
+    hint: 'The name the gauge is cached under. Index history uses an I: prefix; a CSV import uses whatever it was imported as',
+    visibleWhen: { key: 'wingWidthMode', equals: 'vixBands' }
+  },
+  {
+    key: 'vixLowThreshold',
+    label: 'Low VIX below',
+    kind: 'number',
+    default: 17,
+    min: 1,
+    step: 1,
+    visibleWhen: { key: 'wingWidthMode', equals: 'vixBands' }
+  },
+  {
+    key: 'vixLowWidth',
+    label: 'Width below that',
+    kind: 'number',
+    default: 20,
+    min: 5,
+    step: 5,
+    visibleWhen: { key: 'wingWidthMode', equals: 'vixBands' }
+  },
+  {
+    key: 'vixHighThreshold',
+    label: 'High VIX at',
+    kind: 'number',
+    default: 32,
+    min: 1,
+    step: 1,
+    visibleWhen: { key: 'wingWidthMode', equals: 'vixBands' }
+  },
+  {
+    key: 'vixMidWidth',
+    label: 'Width in between',
+    kind: 'number',
+    default: 30,
+    min: 5,
+    step: 5,
+    visibleWhen: { key: 'wingWidthMode', equals: 'vixBands' }
+  },
+  {
+    key: 'vixHighWidth',
+    label: 'Width above that',
+    kind: 'number',
+    default: 45,
+    min: 5,
+    step: 5,
+    visibleWhen: { key: 'wingWidthMode', equals: 'vixBands' }
+  }
+]
+
+/** The single width control, for strategies that never vary their width. */
+const WING_WIDTH_PARAM: StrategyParam = WING_WIDTH_PARAMS.find((p) => p.key === 'wingWidth')!
+
+/** The same controls, with the banded mode pre-selected. */
+function bandedByDefault(params: readonly StrategyParam[]): StrategyParam[] {
+  return params.map((param) =>
+    param.key === 'wingWidthMode' && param.kind === 'choice'
+      ? { ...param, default: 'vixBands' }
+      : param
+  )
+}
+
+/**
+ * The wing-width half of a study configuration.
+ *
+ * `wingWidth` is always populated: for a banded study the runner resolves a
+ * width per entry, so the config value is nominal only, and the middle band is
+ * the honest choice for it - the width such a study spends most of its time at.
+ * Nothing reads it in preference to the rule, and every trade records the width
+ * it was actually built with.
+ */
+function buildWidth(
+  params: Record<string, StrategyParamValue>
+): { wingWidth: number; wingWidthRule?: WingWidthConfig } {
+  if (str(params, 'wingWidthMode', 'fixed') !== 'vixBands') {
+    return { wingWidth: num(params, 'wingWidth', 25) }
+  }
+  const bands: WingWidthBand[] = [
+    { below: num(params, 'vixLowThreshold', 17), wingWidth: num(params, 'vixLowWidth', 20) },
+    { below: num(params, 'vixHighThreshold', 32), wingWidth: num(params, 'vixMidWidth', 30) },
+    { wingWidth: num(params, 'vixHighWidth', 45) }
+  ]
+  return {
+    wingWidth: num(params, 'vixMidWidth', 30),
+    wingWidthRule: {
+      type: 'volatilityBands',
+      ticker: str(params, 'gaugeTicker', 'I:VIX').trim().toUpperCase(),
+      bands
+    }
+  }
 }
 
 function buildPlacement(params: Record<string, StrategyParamValue>): PlacementConfig {
@@ -240,7 +366,7 @@ const EMA_SWING: StrategyDefinition = {
       min: 0,
       hint: 'Days either side of the target'
     },
-    WING_WIDTH_PARAM,
+    ...WING_WIDTH_PARAMS,
     ...PLACEMENT_PARAMS
   ],
   defaultManagements: [...DEFAULT_MANAGEMENT_SET],
@@ -257,7 +383,71 @@ const EMA_SWING: StrategyDefinition = {
     expirationRule: 'nearest' as ExpirationRule,
     maxDeviation: num(params, 'maxDeviation', 2),
     placement: buildPlacement(params),
-    wingWidth: num(params, 'wingWidth', 25)
+    ...buildWidth(params)
+  })
+}
+
+const EMA_SWING_VIX_WIDTH: StrategyDefinition = {
+  id: 'ema-swing-vix-width-butterfly',
+  label: 'EMA swing butterfly, VIX-scaled width',
+  summary: 'The 7 DTE swing study, with the wing width set each day by where VIX is trading.',
+  rules: [
+    'Identical to the EMA direction swing butterfly in every respect except how wide the structure is.',
+    'At entry, read the volatility gauge and take the wing width from the band that level falls in.',
+    'The gauge is read at the entry minute. Where that minute is missing it carries forward from earlier in the session, then falls back to the previous session close - never the entry day close, which would be hours of hindsight applied to the size of every trade.',
+    'A session with no gauge reading at all is skipped rather than traded at a nominal width.',
+    'Each trade records the width it was built with and the gauge level that chose it, so the rule can be judged after the fact.'
+  ],
+  horizon: 'multiDay',
+  requiresIntradayIndex: false,
+  params: [
+    { key: 'entryTime', label: 'Entry time (ET)', kind: 'time', default: '09:35' },
+    {
+      key: 'entryWindowMinutes',
+      label: 'Entry window',
+      kind: 'number',
+      default: 15,
+      min: 0,
+      hint: 'Minutes a fill may trail the entry time when prints are sparse'
+    },
+    { key: 'emaPeriod', label: 'EMA period', kind: 'number', default: 9, min: 2 },
+    {
+      key: 'meanReversionOverride',
+      label: 'Two-candle mean reversion',
+      kind: 'toggle',
+      default: false,
+      hint: 'Uses the previous close against its EMA, then reverses after two candles wholly on one side when the latest candle turns back toward the average'
+    },
+    { key: 'targetDte', label: 'Target DTE', kind: 'number', default: 7, min: 1 },
+    {
+      key: 'maxDeviation',
+      label: 'Max deviation',
+      kind: 'number',
+      default: 2,
+      min: 0,
+      hint: 'Days either side of the target'
+    },
+    // The same controls every strategy has, defaulted to the banded mode: this
+    // entry exists precisely to make that the one-click configuration, and
+    // switching it back to fixed reproduces the plain swing study exactly.
+    ...bandedByDefault(WING_WIDTH_PARAMS),
+    ...PLACEMENT_PARAMS
+  ],
+  defaultManagements: [...DEFAULT_MANAGEMENT_SET],
+  sweepAxes: ['profitTarget', 'stopLoss', 'targetDte', 'emaPeriod', 'expectedMoveBuffer'],
+  build: (params) => ({
+    entryTime: str(params, 'entryTime', '09:35'),
+    entryWindowMinutes: num(params, 'entryWindowMinutes', 15),
+    entry: {
+      type: 'ema',
+      period: num(params, 'emaPeriod', 9),
+      meanReversionOverride: bool(params, 'meanReversionOverride', false)
+    },
+    targetDte: num(params, 'targetDte', 7),
+    expirationRule: 'nearest' as ExpirationRule,
+    maxDeviation: num(params, 'maxDeviation', 2),
+    placement: buildPlacement(params),
+    ...buildWidth(params)
   })
 }
 
@@ -360,6 +550,77 @@ const ORB_ZERO_DTE: StrategyDefinition = {
   }
 }
 
+const EMA_ZERO_DTE: StrategyDefinition = {
+  id: 'ema-0dte-butterfly',
+  label: 'EMA direction 0DTE butterfly',
+  summary: 'The daily EMA picks the side each morning; a same-session butterfly sits at the edge of the expected move.',
+  rules: [
+    'At the entry time, compare SPX with a daily EMA built only from sessions that had already closed.',
+    'Above the average takes a bullish upside call butterfly; below it takes a bearish downside put butterfly.',
+    'The butterfly expires the same session, and its near wing sits at the edge of the expected move measured from the at-the-money straddle at entry.',
+    'Every session with a signal is traded - there is no breakout to wait for, so nothing is skipped for want of a trigger.'
+  ],
+  horizon: 'intraday',
+  // The EMA needs only daily closes, and the entry level falls back to
+  // put-call parity, so unlike the breakout rule this one can run on sessions
+  // with no cached index minutes.
+  requiresIntradayIndex: false,
+  params: [
+    { key: 'entryTime', label: 'Entry time (ET)', kind: 'time', default: '09:35' },
+    {
+      key: 'entryWindowMinutes',
+      label: 'Entry window',
+      kind: 'number',
+      default: 10,
+      min: 0,
+      hint: 'Minutes a fill may trail the entry time while waiting for priceable legs'
+    },
+    { key: 'emaPeriod', label: 'EMA period', kind: 'number', default: 9, min: 2 },
+    {
+      key: 'minimumDistance',
+      label: 'Minimum distance from EMA',
+      kind: 'number',
+      default: 0,
+      min: 0,
+      step: 5,
+      hint: 'SPX points. Zero trades every session; a positive value sits out the days price is resting on the average, where the side is close to a coin flip'
+    },
+    {
+      key: 'mode',
+      label: 'Direction',
+      kind: 'choice',
+      default: 'follow',
+      options: [
+        { value: 'follow', label: 'Above the EMA is bullish' },
+        { value: 'fade', label: 'Above the EMA is bearish (inverted)' }
+      ],
+      hint: 'A butterfly pays where price stops rather than where it goes, so the inverted reading is worth measuring too'
+    },
+    WING_WIDTH_PARAM,
+    ...PLACEMENT_PARAMS
+  ],
+  defaultManagements: allManagementsFor('intraday'),
+  sweepAxes: ['profitTarget', 'stopLoss', 'wingWidth', 'emaPeriod', 'expectedMoveBuffer'],
+  build: (params) => ({
+    entryTime: str(params, 'entryTime', '09:35'),
+    entryWindowMinutes: num(params, 'entryWindowMinutes', 10),
+    entry: {
+      type: 'ema',
+      period: num(params, 'emaPeriod', 9),
+      minimumDistance: num(params, 'minimumDistance', 0),
+      invert: str(params, 'mode', 'follow') === 'fade'
+    },
+    targetDte: 0,
+    expirationRule: 'nearest' as ExpirationRule,
+    // Zero, so a session whose own expiration is unlisted is skipped rather
+    // than quietly traded as an overnight structure.
+    maxDeviation: 0,
+    expirationWeekdays: [1, 2, 3, 4, 5],
+    placement: buildPlacement(params),
+    wingWidth: num(params, 'wingWidth', 25)
+  })
+}
+
 const FIXED_ZERO_DTE: StrategyDefinition = {
   id: 'fixed-0dte-butterfly',
   label: 'Fixed-time 0DTE butterfly',
@@ -406,12 +667,14 @@ const FIXED_ZERO_DTE: StrategyDefinition = {
 }
 
 export const STRATEGY_CATALOG: readonly StrategyDefinition[] = [
+  EMA_SWING_VIX_WIDTH,
+  EMA_ZERO_DTE,
   ORB_ZERO_DTE,
   EMA_SWING,
   FIXED_ZERO_DTE
 ]
 
-export const DEFAULT_STRATEGY_ID = ORB_ZERO_DTE.id
+export const DEFAULT_STRATEGY_ID = EMA_SWING_VIX_WIDTH.id
 
 export function findStrategy(id: string): StrategyDefinition | undefined {
   return STRATEGY_CATALOG.find((strategy) => strategy.id === id)
@@ -508,7 +771,7 @@ export function describeEntry(config: StudyConfig): string {
 /** Short summary of a configuration, for run lists and forward-test headers. */
 export function describeConfig(config: StudyConfig): string {
   const dte = config.targetDte === 0 ? '0DTE' : `${config.targetDte} DTE`
-  return `${describeEntry(config)} | ${dte} | ${config.wingWidth}-wide | ${describePlacement(config.placement)}`
+  return `${describeEntry(config)} | ${dte} | ${describeWingWidth(config)} | ${describePlacement(config.placement)}`
 }
 
 export function describePlacement(placement: PlacementConfig): string {

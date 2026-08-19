@@ -23,6 +23,9 @@ const TRADE_HEADER = [
   'run_id', 'strategy_id', 'strategy_label',
   'entry_utc', 'entry_underlying', 'expiration', 'direction', 'option_type',
   'lower_strike', 'center_strike', 'upper_strike', 'wing_width', 'quantity',
+  // The gauge reading that chose the width, so a banded study can be pivoted on
+  // the condition rather than only on the width it produced.
+  'gauge_level',
   'entry_debit', 'exit_utc', 'exit_value', 'exit_reason', 'ambiguous',
   'pnl_dollars', 'pnl_pct', 'holding_minutes', 'exit_dte',
   'mfe_pct', 'mae_pct', 'mfe_capture', 'profit_giveback',
@@ -45,6 +48,7 @@ export function tradesToCsv(runId: string, trades: readonly TradeResult[]): stri
       t.definition.expiration, t.definition.direction, t.definition.optionType,
       t.definition.lowerStrike, t.definition.centerStrike, t.definition.upperStrike,
       t.definition.wingWidth, t.definition.quantity,
+      t.entryIndicators?.gaugeLevel ?? '',
       t.entryDebit, new Date(t.exitTimestamp).toISOString(), t.exitValue,
       t.exitReason, t.ambiguous,
       t.pnlDollars, t.pnlPct, t.holdingMinutes, t.exitDte,

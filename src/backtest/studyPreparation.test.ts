@@ -3,7 +3,7 @@ import type { OptionsHistoricalDataProvider } from '../data/provider.js'
 import type { BarQuery, UnderlyingBar } from '../domain/bars.js'
 import type { StudyConfig } from '../shared/study.js'
 import { easternToTimestamp, sessionMinuteCount, tradingDaysBetween } from '../core/time/marketTime.js'
-import { planStudyPreparation, prepareStudyData } from './studyPreparation.js'
+import { planStudyPreparation, prepareStudyData, studyDataEnd } from './studyPreparation.js'
 
 const CONFIG: StudyConfig = {
   underlying: 'SPX',
@@ -55,12 +55,26 @@ function providerFor(makeBars: (query: BarQuery) => UnderlyingBar[]): OptionsHis
 describe('study data preparation', () => {
   it('plans bounded minute chunks and an EMA warm-up range', () => {
     const plan = planStudyPreparation(CONFIG, 'I:SPX')
-    const sessions = tradingDaysBetween(CONFIG.from, CONFIG.to)
+    /*
+     * Through the last expiration, not the last entry. A trade entered on the
+     * final session is still open for another nine days and has to be tracked
+     * to its expiration; preparing only the entry range left those sessions to
+     * be fetched one day at a time mid-run.
+     */
+    const sessions = tradingDaysBetween(CONFIG.from, studyDataEnd(CONFIG))
 
     expect(plan.dailyFrom).toBe('2025-03-28')
-    expect(plan.dailyTo).toBe(CONFIG.to)
+    expect(plan.dailyTo).toBe('2025-07-25')
+    expect(plan.dailyTo > CONFIG.to).toBe(true)
     expect(plan.minuteChunks.length).toBe(Math.ceil(sessions.length / 21))
     expect(plan.minuteChunks.flatMap((chunk) => chunk.dates)).toEqual(sessions)
+  })
+
+  it('never plans past the last completed session', () => {
+    // A range reaching the present would otherwise ask the provider for days
+    // that have not happened, which is where the tail of a run used to fail.
+    const plan = planStudyPreparation({ ...CONFIG, to: '2999-01-01' }, 'I:SPX')
+    expect(plan.dailyTo < '2999-01-01').toBe(true)
   })
 
   it('accepts complete underlying sessions and reports progress', async () => {
@@ -81,7 +95,10 @@ describe('study data preparation', () => {
       onProgress: (progress) => updates.push(progress.stage)
     })
 
-    expect(result.minuteSessions).toBe(3)
+    // Three entry sessions plus the tail needed to track their expirations.
+    expect(result.minuteSessions).toBe(
+      tradingDaysBetween(short.from, studyDataEnd(short)).length
+    )
     expect(result.incompleteMinuteSessions).toEqual([])
     expect(updates.at(-1)).toMatch(/verified SPX minutes/)
   })

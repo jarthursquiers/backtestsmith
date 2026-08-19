@@ -3,9 +3,11 @@ import type { OptionContract, OptionType } from '../domain/contracts.js'
 import type { ButterflyDefinition, ButterflySeries, MissingDataPolicy, PricingAssumptions } from '../domain/butterfly.js'
 import type { TradeResult } from '../shared/trade.js'
 import {
+  describeBands,
   isZeroDteStudy,
   normalizeSkipReason,
   resolveExpirationWeekdays,
+  resolveGaugeTicker,
   resolveIndexTicker,
   type StudyConfig,
   type StudyProgress,
@@ -14,6 +16,7 @@ import {
 } from '../shared/study.js'
 import {
   easternToTimestamp,
+  marketDateOf,
   parseTimeOfDay,
   toEastern,
   tradingDaysBetween,
@@ -44,6 +47,7 @@ import { previousCompletedBar } from './indicators.js'
 import { buildManagementSet } from './managementSets.js'
 import { createLogger } from '../services/logger.js'
 import { studyWarmupStart } from './studyPreparation.js'
+import { previousGaugeClose, readGauge, validateBands, wingWidthForLevel } from './wingWidth.js'
 
 const log = createLogger('study')
 
@@ -86,19 +90,45 @@ export async function preflightStudy(
 ): Promise<StudyPreflight> {
   const sessions = tradingDaysBetween(config.from, config.to)
   const indexTicker = resolveIndexTicker(config)
-  const dailyBars = await source.getDailyBars(indexTicker, shiftDays(config.from, -180), config.to)
+  const blockers: string[] = []
+  const warnings: string[] = []
+
+  /*
+   * Preflight exists to explain why a run cannot work, so it must not fail in
+   * the same way the run would. A refused request here is itself the finding,
+   * and is reported as a blocker rather than thrown at the caller.
+   */
+  const probe = async <T>(what: string, read: () => Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await read()
+    } catch (error) {
+      blockers.push(`${what} could not be read: ${error instanceof Error ? error.message : String(error)}`)
+      return fallback
+    }
+  }
+
+  /*
+   * The same lead-in preparation caches, not a wider invented one. Asking for
+   * more than was ever prepared guaranteed a miss on every run, which mattered
+   * a great deal while this function still went to the provider.
+   */
+  const dailyBars = await probe(
+    `Daily ${indexTicker} history`,
+    () => source.getDailyBars(indexTicker, studyWarmupStart(config), config.to),
+    [] as UnderlyingBar[]
+  )
 
   // Sample the first few sessions rather than every one; the question is whether
   // intraday data exists at all, not exactly how much.
   let underlyingMinuteSessions = 0
   for (const date of sessions.slice(0, 10)) {
-    if ((await source.getUnderlyingMinutes(indexTicker, date)).length > 0) {
-      underlyingMinuteSessions++
-    }
+    const minutes = await probe(
+      `Intraday ${indexTicker} history for ${date}`,
+      () => source.getUnderlyingMinutes(indexTicker, date),
+      [] as UnderlyingBar[]
+    )
+    if (minutes.length > 0) underlyingMinuteSessions++
   }
-
-  const blockers: string[] = []
-  const warnings: string[] = []
   const period = config.entry.type === 'ema' ? config.entry.period : 0
 
   if (sessions.length === 0) {
@@ -153,6 +183,66 @@ export async function preflightStudy(
     warnings.push(
       `Only ${underlyingMinuteSessions} of the first ${Math.min(10, sessions.length)} sessions have cached ` +
         `${indexTicker} minute bars. Sessions without them cannot produce an opening range and will be skipped.`
+    )
+  }
+
+  const gaugeTicker = resolveGaugeTicker(config)
+  if (gaugeTicker && config.wingWidthRule?.type === 'volatilityBands') {
+    const problems = validateBands(config.wingWidthRule.bands)
+    if (problems.length > 0) blockers.push(`Wing width bands are invalid. ${problems.join(' ')}`)
+
+    const gaugeDaily = await probe(
+      `Daily ${gaugeTicker} history`,
+      () => source.getDailyBars(gaugeTicker, studyWarmupStart(config), config.to),
+      [] as UnderlyingBar[]
+    )
+    let gaugeMinuteSessions = 0
+    for (const date of sessions.slice(0, 10)) {
+      const minutes = await probe(
+        `Intraday ${gaugeTicker} history for ${date}`,
+        () => source.getUnderlyingMinutes(gaugeTicker, date),
+        [] as UnderlyingBar[]
+      )
+      if (minutes.length > 0) gaugeMinuteSessions++
+    }
+
+    if (gaugeDaily.length === 0 && gaugeMinuteSessions === 0) {
+      blockers.push(
+        `No ${gaugeTicker} history is cached, so the banded wing width (${describeBands(config.wingWidthRule.bands)}) ` +
+          `cannot be resolved and every session would be skipped. Check the ticker - the cache is keyed by whatever ` +
+          `name the data was imported under - or load ${gaugeTicker} history on the SPX Underlying screen.`
+      )
+    } else if (gaugeMinuteSessions === 0) {
+      warnings.push(
+        `No intraday ${gaugeTicker} bars are cached at the start of this range, so each width will be set from the ` +
+          'previous session close rather than the level at entry.'
+      )
+    } else if (gaugeMinuteSessions < Math.min(10, sessions.length)) {
+      warnings.push(
+        `Only ${gaugeMinuteSessions} of the first ${Math.min(10, sessions.length)} sessions have cached ` +
+          `${gaugeTicker} minute bars; the rest fall back to the previous session close.`
+      )
+    }
+  }
+
+  /*
+   * A study whose range reaches into the present cannot finish. Trades entered
+   * near the end still have to be tracked to their expirations, and those days
+   * have not happened yet - so the provider is asked for data that does not
+   * exist and the tail of the run fails rather than producing anything.
+   */
+  // The furthest an entry could expire, deliberately *not* the clamped value
+  // preparation uses: the point is to notice that the range asks for days that
+  // do not exist yet, which clamping would hide.
+  const furthestDte = config.targetDte + (config.maxDeviation ?? 3)
+  const lastDataDate = shiftDays(config.to, furthestDte)
+  const today = marketDateOf(Date.now())
+  if (sessions.length > 0 && lastDataDate >= today) {
+    const safeTo = shiftDays(today, -(furthestDte + 1))
+    warnings.push(
+      `Trades entered near ${config.to} expire as late as ${lastDataDate}, which is not in the past. ` +
+        `Those sessions will be skipped for want of data that does not exist yet. End the range at ` +
+        `${safeTo} or earlier for every entry to be able to mature.`
     )
   }
 
@@ -232,6 +322,10 @@ export async function runStudy(
   if (config.minimumCoverage < 0 || config.minimumCoverage > 1) {
     throw new Error('Minimum coverage must be between 0 and 1.')
   }
+  if (config.wingWidthRule?.type === 'volatilityBands') {
+    const problems = validateBands(config.wingWidthRule.bands)
+    if (problems.length > 0) throw new Error(`Wing width bands are invalid. ${problems.join(' ')}`)
+  }
   const entryStrategy = buildEntryStrategy(config)
   const managements = buildManagementSet(config.managements)
   const missingData: MissingDataPolicy =
@@ -256,6 +350,16 @@ export async function runStudy(
    */
   const warmupStart = studyWarmupStart(config)
   const dailyBars = await source.getDailyBars(indexTicker, warmupStart, config.to)
+
+  /*
+   * The volatility gauge, when the wing width is banded. Daily history is
+   * fetched once for the whole range as the fallback for a session whose
+   * intraday gauge bars are missing; the minute bars are read per session.
+   */
+  const gaugeTicker = resolveGaugeTicker(config)
+  const gaugeDaily = gaugeTicker
+    ? await source.getDailyBars(gaugeTicker, warmupStart, config.to)
+    : []
 
   const trades: TradeResult[] = []
   const series: ButterflySeries[] = []
@@ -298,6 +402,21 @@ export async function runStudy(
       hooks.onSkip?.({ date: entryDate, reason })
     }
 
+    /*
+     * One session failing to fetch must not destroy the run.
+     *
+     * The tail of any DTE-targeted study reaches past its own end date: a trade
+     * entered on the last session still needs data through its expiration, so
+     * the final sessions routinely ask for days the cache has not got and the
+     * provider will not serve. Letting that throw discarded every entry already
+     * computed, which on a year-long study is an hour of work lost to the least
+     * interesting sessions in the sample.
+     *
+     * `continue` inside this block still targets the loop, so every deliberate
+     * skip below behaves exactly as it did. A systematic failure stays visible:
+     * it becomes N identical skips, grouped and reported like any other cause.
+     */
+    try {
     // Yesterday's close picks the at-the-money strike. It is known at entry, so
     // using it introduces no look-ahead, and it avoids the circularity of
     // needing the index level to find the strike that reveals the index level.
@@ -534,12 +653,42 @@ export async function runStudy(
       continue
     }
 
+    // --- wing width -----------------------------------------------------------
+    /*
+     * Resolved per entry, because a banded rule makes the width a property of
+     * the session rather than of the study. A gauge reading that cannot be
+     * established skips the session: falling back to the nominal width would
+     * label the run "VIX-scaled" while quietly trading something else.
+     */
+    let wingWidth = config.wingWidth
+    let gauge: ReturnType<typeof readGauge> = null
+
+    if (gaugeTicker && config.wingWidthRule?.type === 'volatilityBands') {
+      const gaugeMinutes = await source.getUnderlyingMinutes(gaugeTicker, entryDate)
+      gauge = readGauge({
+        entryTimestamp: filledAt,
+        minutes: gaugeMinutes,
+        previousDaily: previousGaugeClose(gaugeDaily, entryDate)
+      })
+      if (!gauge) {
+        skip(
+          `no ${gaugeTicker} reading at or before the entry minute, and no prior daily close, ` +
+            'so the banded wing width cannot be resolved'
+        )
+        continue
+      }
+      wingWidth = wingWidthForLevel(config.wingWidthRule.bands, gauge.level)
+    }
+
     const directionalChain = await source.getChain(config.underlying, choice.expiration, signal.optionType)
     const strikes = [...new Set(directionalChain.filter(rootOk).map((c) => c.strike))].sort((a, b) => a - b)
 
-    const placed = placement.place({ signal, availableStrikes: strikes, wingWidth: config.wingWidth })
+    const placed = placement.place({ signal, availableStrikes: strikes, wingWidth })
     if (!placed) {
-      skip(`placement failed: required strikes are not all listed (wing ${config.wingWidth})`)
+      skip(
+        `placement failed: required strikes are not all listed (wing ${wingWidth}` +
+          `${gauge ? `, ${gaugeTicker} ${gauge.level.toFixed(2)}` : ''})`
+      )
       continue
     }
 
@@ -603,6 +752,17 @@ export async function runStudy(
       })
     }
 
+    /*
+     * What the entry rule saw, kept with the trade. Until now these were
+     * computed and discarded, which made it impossible to ask afterwards
+     * whether a rule earned its keep - "did 30-wide help at VIX 25" needs the
+     * VIX reading beside the result, not just the width it produced.
+     */
+    reconstructed.entryIndicators = {
+      ...signal.indicators,
+      ...(gauge ? { gaugeLevel: gauge.level, gaugeAgeMinutes: gauge.ageMinutes } : {})
+    }
+
     if (reconstructed.quality.coverage < config.minimumCoverage) {
       const sensitivity = coverageSensitivity(
         definition,
@@ -640,8 +800,16 @@ export async function runStudy(
       continue
     }
 
-    series.push(reconstructed)
-    trades.push(...simulateAll(reconstructed, managements))
+      series.push(reconstructed)
+      trades.push(...simulateAll(reconstructed, managements))
+    } catch (error) {
+      // Cancellation is not a data problem; stop rather than recording a skip
+      // for every remaining session.
+      if (hooks.signal?.aborted) break
+      const message = error instanceof Error ? error.message : String(error)
+      log.warn('session failed', { date: entryDate, error: message })
+      skip(`data request failed: ${message}`)
+    }
   }
 
   const elapsedMs = Date.now() - startedAt
