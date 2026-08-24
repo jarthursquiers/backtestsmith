@@ -12,6 +12,7 @@ import {
   YAxis
 } from 'recharts'
 import type { AnalyticsReport, Histogram } from '../../shared/analytics.js'
+import type { StudyStructure } from '../../shared/study.js'
 import { Badge, Card, EmptyState, Select, Spinner } from './primitives.js'
 import { fmtInt, fmtPct } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
@@ -51,10 +52,12 @@ function HistogramChart({ data, color = '#4f9cf9', height = 160 }: { data: Histo
 
 export function AnalyticsPanel({
   runId,
+  structure,
   strategyIds,
   labels
 }: {
   runId: string
+  structure?: StudyStructure
   strategyIds: string[]
   labels: Record<string, string>
 }) {
@@ -172,6 +175,7 @@ export function AnalyticsPanel({
 
       {report && (
         <>
+          {structure !== 'doubleCalendar' && (
           <Card title="Tent approach" subtitle="Outcomes by how close the underlying came to the centre strike">
             {report.tent.tradesWithUnderlying === 0 ? (
               <EmptyState title="No underlying data for these trades">
@@ -215,6 +219,7 @@ export function AnalyticsPanel({
               </>
             )}
           </Card>
+          )}
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card title="Return distribution" subtitle="Realized return per trade">

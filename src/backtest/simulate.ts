@@ -1,7 +1,7 @@
 import type { ButterflySeries, DataQuality } from '../domain/butterfly.js'
 import { CONTRACT_MULTIPLIER } from '../domain/butterfly.js'
 import type { Excursions } from '../shared/excursions.js'
-import type { TradeResult } from '../shared/trade.js'
+import type { ButterflyTradeResult } from '../shared/trade.js'
 import { computeExcursions, firstReachedTimes } from './excursions.js'
 import type { ExitReason, ExitStrategy, PositionState } from './exits.js'
 
@@ -26,7 +26,7 @@ export function simulateTrade(
   series: ButterflySeries,
   strategy: ExitStrategy,
   options: SimulateOptions = {}
-): TradeResult {
+): ButterflyTradeResult {
   const { observations, definition, entryDebit } = series
   const exitSlippage = options.exitSlippage ?? series.pricing.slippage
 
@@ -200,6 +200,6 @@ export function simulateAll(
   series: ButterflySeries,
   strategies: readonly ExitStrategy[],
   options: SimulateOptions = {}
-): TradeResult[] {
+): ButterflyTradeResult[] {
   return strategies.map((strategy) => simulateTrade(series, strategy, options))
 }

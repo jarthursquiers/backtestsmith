@@ -8,6 +8,15 @@ import type { OptionType } from './contracts.js'
  * result.
  */
 export interface ButterflyDefinition {
+  /**
+   * Which structure this is, for code that handles more than one.
+   *
+   * Optional, and absent means butterfly. Studies stored before double
+   * calendars existed have no such field, and a required discriminator would
+   * have made every one of them fail to load - so absence is the legacy case
+   * and carries the original meaning.
+   */
+  structure?: 'butterfly'
   underlying: string
   /**
    * Directional intent of the position, not the option type. A downside/bearish

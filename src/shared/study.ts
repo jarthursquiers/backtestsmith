@@ -110,12 +110,66 @@ export type PlacementConfig =
   | { type: 'expectedMove'; buffer?: number; anchor?: ExpectedMoveAnchor }
 
 /**
+ * The structure a study trades.
+ *
+ * Absent means butterfly, so every configuration stored before double calendars
+ * existed still reads as the thing it was.
+ */
+export type StudyStructure = 'butterfly' | 'doubleCalendar'
+
+/**
+ * The double calendar's own parameters.
+ *
+ * Kept in one nested object rather than spread across `StudyConfig` because
+ * none of them means anything to a butterfly, and a flat config where half the
+ * fields are inert depending on another field is how a study ends up configured
+ * with a number that was quietly ignored.
+ */
+export interface CalendarConfig {
+  /** Option root the legs are selected from; SPXW for PM-settled weeklies. */
+  root: string
+  /** Absolute delta targeted for both short strikes. */
+  targetDelta: number
+  /** Target days to the short expiration. */
+  frontTargetDte: number
+  /** Target days to the long expiration. */
+  backTargetDte: number
+  /** Largest acceptable deviation from either target, in days. */
+  maxDteDeviation: number
+  /**
+   * Weekdays a position may be opened on, 1 = Monday .. 5 = Friday.
+   * Empty means every session, which is how a rolling-entry check is run.
+   */
+  entryWeekdays: number[]
+  /** Eastern time on the front expiration day that any open position is closed. */
+  horizonTime: string
+  /**
+   * Fraction of the distance from the midpoint to the far side of the package
+   * spread given up on every fill. 0 fills at the mid, 1 pays the full offer.
+   */
+  spreadFraction: number
+  /** Commission per contract per side, in dollars. Four contracts per lot. */
+  commissionPerContract: number
+}
+
+/**
  * A complete, reproducible study definition.
  *
  * Stored verbatim with every run, so a result can always be traced back to the
  * exact assumptions that produced it.
  */
 export interface StudyConfig {
+  /**
+   * Which structure this study trades. Absent means butterfly.
+   *
+   * The butterfly fields below stay populated for a calendar study - the form
+   * fills them with defaults and the engine ignores them - rather than being
+   * made optional, which would have forced a null check into every one of the
+   * dozens of places that read them today.
+   */
+  structure?: StudyStructure
+  /** The double calendar's parameters. Required when `structure` says so. */
+  calendar?: CalendarConfig
   /** Option underlying root, e.g. SPX. Used for chain lookups. */
   underlying: string
   /**
@@ -325,6 +379,11 @@ export function resolveGaugeTicker(config: Pick<StudyConfig, 'wingWidthRule'>): 
   if (!rule || rule.type !== 'volatilityBands') return null
   const ticker = rule.ticker.trim().toUpperCase()
   return ticker === '' ? null : ticker
+}
+
+/** The structure a study trades, defaulting to butterfly for older configs. */
+export function resolveStructure(config: Pick<StudyConfig, 'structure'>): StudyStructure {
+  return config.structure === 'doubleCalendar' ? 'doubleCalendar' : 'butterfly'
 }
 
 /** True when a study trades the session it enters on. */

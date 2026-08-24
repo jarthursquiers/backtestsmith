@@ -23,7 +23,7 @@ const log = createLogger('database')
  */
 
 /** Bumped whenever the schema changes; migrations run in order on open. */
-const SCHEMA_VERSION = 5
+const SCHEMA_VERSION = 6
 
 const MIGRATIONS: { version: number; statements: string[] }[] = [
   {
@@ -267,6 +267,39 @@ const MIGRATIONS: { version: number; statements: string[] }[] = [
         PRIMARY KEY (forward_test_id, run_id)
       )`,
       `CREATE INDEX IF NOT EXISTS idx_forward_runs_test ON forward_test_runs (forward_test_id, from_date)`
+    ]
+  },
+  {
+    /*
+     * A second structure: the double calendar.
+     *
+     * `study_trades` was built around a butterfly, and three of its columns are
+     * meaningless for a four-leg position across two expirations - a calendar
+     * has no centre strike, no wing width, and no directional intent. They are
+     * relaxed to nullable rather than filled with a plausible-looking substitute
+     * (the midpoint between the shorts, say), because a column that quietly
+     * means something different per row is worse than one that is honestly
+     * empty.
+     *
+     * `structure` is nullable for the same reason the domain field is optional:
+     * every row written before this migration is a butterfly, and backfilling
+     * is cheaper and clearer than teaching every reader that NULL means one
+     * particular thing. `expiration` stays NOT NULL and holds the calendar's
+     * front expiration, which is the date the position is defined by.
+     */
+    version: 6,
+    statements: [
+      // DuckDB refuses to alter a column an index depends on, so the run index
+      // is dropped and rebuilt around the change rather than the table being
+      // copied wholesale - which on a study archive of millions of trades is
+      // the difference between a migration and an outage.
+      `DROP INDEX IF EXISTS idx_study_trades_run`,
+      `ALTER TABLE study_trades ADD COLUMN IF NOT EXISTS structure VARCHAR`,
+      `ALTER TABLE study_trades ALTER COLUMN center_strike DROP NOT NULL`,
+      `ALTER TABLE study_trades ALTER COLUMN wing_width DROP NOT NULL`,
+      `ALTER TABLE study_trades ALTER COLUMN direction DROP NOT NULL`,
+      `UPDATE study_trades SET structure = 'butterfly' WHERE structure IS NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_study_trades_run ON study_trades (run_id, strategy_id)`
     ]
   }
 ]
@@ -569,12 +602,24 @@ async function inspectDatabaseFile(path: string): Promise<Omit<DatabaseBackupRes
   const connection = await instance.connect()
   try {
     const reader = await connection.runAndReadAll(`
+      -- Every contract any stored trade rests on, across both structures: a
+      -- butterfly's three legs and a double calendar's four. A backup that
+      -- reported only the butterfly legs would call a calendar-only archive
+      -- complete while none of its contracts were present.
       WITH referenced AS (
         SELECT DISTINCT json_extract_string(payload_json, '$.definition.lowerTicker') AS ticker FROM study_trades
         UNION
         SELECT DISTINCT json_extract_string(payload_json, '$.definition.centerTicker') AS ticker FROM study_trades
         UNION
         SELECT DISTINCT json_extract_string(payload_json, '$.definition.upperTicker') AS ticker FROM study_trades
+        UNION
+        SELECT DISTINCT json_extract_string(payload_json, '$.definition.tickers.putShort') AS ticker FROM study_trades
+        UNION
+        SELECT DISTINCT json_extract_string(payload_json, '$.definition.tickers.putLong') AS ticker FROM study_trades
+        UNION
+        SELECT DISTINCT json_extract_string(payload_json, '$.definition.tickers.callShort') AS ticker FROM study_trades
+        UNION
+        SELECT DISTINCT json_extract_string(payload_json, '$.definition.tickers.callLong') AS ticker FROM study_trades
       )
       SELECT
         (SELECT count(*) FROM option_contracts) AS option_contracts,

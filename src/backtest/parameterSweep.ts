@@ -83,6 +83,32 @@ const APPLIERS: Record<string, { apply: Applier; kind: 'entry' | 'management' }>
     kind: 'entry',
     apply: (c, v) => ({ ...c, minimumCoverage: v })
   },
+  targetDelta: {
+    kind: 'entry',
+    // The form and sweep use whole delta points (30), while the engine stores
+    // the option delta as a fraction (0.30).
+    apply: (c, v) => c.calendar
+      ? { ...c, calendar: { ...c.calendar, targetDelta: v / 100 } }
+      : c
+  },
+  frontDte: {
+    kind: 'entry',
+    apply: (c, v) => c.calendar
+      ? { ...c, targetDte: v, calendar: { ...c.calendar, frontTargetDte: v } }
+      : c
+  },
+  backDte: {
+    kind: 'entry',
+    apply: (c, v) => c.calendar
+      ? { ...c, calendar: { ...c.calendar, backTargetDte: v } }
+      : c
+  },
+  spreadFraction: {
+    kind: 'entry',
+    apply: (c, v) => c.calendar
+      ? { ...c, calendar: { ...c.calendar, spreadFraction: v } }
+      : c
+  },
 
   /*
    * Management axes are expressed as the ids the engine already knows, so a

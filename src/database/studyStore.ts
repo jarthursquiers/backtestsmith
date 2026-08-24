@@ -1,4 +1,4 @@
-import type { TradeResult } from '../shared/trade.js'
+import { isCalendarDefinition, type TradeResult } from '../shared/trade.js'
 import type { StudyConfig, StudyRunResult, StudyRunSummary, SkippedEntry } from '../shared/study.js'
 import type { AppendType, Database } from './duckdb.js'
 import { createLogger } from '../services/logger.js'
@@ -36,8 +36,25 @@ const TRADE_COLUMNS: readonly AppendType[] = [
   'double',  // mfe_capture
   'double',  // profit_giveback
   'double',  // coverage
-  'varchar'  // payload_json
+  'varchar', // payload_json
+  'varchar'  // structure
 ]
+
+/**
+ * The columns that describe *where* a position sits, per structure.
+ *
+ * A double calendar has no centre strike, no wing width and no directional
+ * intent, so those three are null rather than filled with a plausible-looking
+ * stand-in. `expiration` holds the front expiration, which is the date a
+ * calendar is defined by and the one a query would mean by the word.
+ */
+function placementColumns(trade: TradeResult): [string, number | null, number | null, string | null] {
+  if (isCalendarDefinition(trade.definition)) {
+    return [trade.definition.frontExpiration, null, null, null]
+  }
+  const d = trade.definition
+  return [d.expiration, d.centerStrike, d.wingWidth, d.direction]
+}
 
 export class StudyStore {
   constructor(private readonly db: Database) {}
@@ -77,10 +94,7 @@ export class StudyStore {
           t.strategyId,
           t.entryTimestamp,
           t.exitTimestamp,
-          t.definition.expiration,
-          t.definition.centerStrike,
-          t.definition.wingWidth,
-          t.definition.direction,
+          ...placementColumns(t),
           t.entryDebit,
           t.exitValue,
           t.exitReason,
@@ -94,7 +108,8 @@ export class StudyStore {
           t.mfeCaptureRatio,
           t.profitGiveback,
           t.quality.coverage,
-          JSON.stringify(t)
+          JSON.stringify(t),
+          isCalendarDefinition(t.definition) ? 'doubleCalendar' : 'butterfly'
         ])
       )
     })

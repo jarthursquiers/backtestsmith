@@ -1,6 +1,32 @@
 import { CONTRACT_MULTIPLIER } from '../domain/butterfly.js'
-import type { TradeResult } from '../shared/trade.js'
+import type { Excursions } from '../shared/excursions.js'
 import type { EquityPoint, PositionSizing, StudyMetrics } from '../shared/metrics.js'
+
+/**
+ * The parts of a completed trade these statistics actually read.
+ *
+ * Stated as a structural interface rather than as `TradeResult` so a second
+ * structure - the double calendar - can be summarized by the identical code.
+ * Two implementations of expectancy and drawdown that were meant to agree but
+ * were free to drift is the failure this avoids; `TradeResult` satisfies this
+ * shape as it stands, so nothing about the butterfly path changes.
+ */
+export interface MetricsTrade {
+  exitTimestamp: number
+  pnlDollars: number
+  pnlPct: number
+  holdingMinutes: number
+  excursions: Excursions
+  mfeCaptureRatio: number | null
+  profitGiveback: number
+  firstReached: Record<string, number | null>
+  ambiguous: boolean
+  /** Capital at risk in dollars. Derived from the debit when absent. */
+  riskDollars?: number
+  /** Cost basis in price points, per unit of quantity. */
+  entryDebit?: number
+  definition?: { quantity: number }
+}
 
 /**
  * Performance statistics over a set of trades.
@@ -65,10 +91,11 @@ export function longestRun<T>(items: readonly T[], predicate: (item: T) => boole
  * and an expensive one contribute unequally to the equity curve purely because
  * of their debit, not because of the rule being tested.
  */
-export function scaledPnl(trade: TradeResult, sizing: PositionSizing, riskPerTrade: number): number {
+export function scaledPnl(trade: MetricsTrade, sizing: PositionSizing, riskPerTrade: number): number {
   if (sizing === 'oneContract') return trade.pnlDollars
 
-  const riskDollars = trade.entryDebit * CONTRACT_MULTIPLIER * trade.definition.quantity
+  const riskDollars =
+    trade.riskDollars ?? (trade.entryDebit ?? 0) * CONTRACT_MULTIPLIER * (trade.definition?.quantity ?? 1)
   if (!(riskDollars > 0)) return 0
   return trade.pnlDollars * (riskPerTrade / riskDollars)
 }
@@ -81,7 +108,7 @@ export function scaledPnl(trade: TradeResult, sizing: PositionSizing, riskPerTra
  * in an order they never did.
  */
 export function buildEquityCurve(
-  trades: readonly TradeResult[],
+  trades: readonly MetricsTrade[],
   sizing: PositionSizing,
   riskPerTrade: number
 ): EquityPoint[] {
@@ -119,7 +146,7 @@ export interface MetricsOptions {
  * job, and `simulateAll` guarantees it by construction.
  */
 export function computeMetrics(
-  trades: readonly TradeResult[],
+  trades: readonly MetricsTrade[],
   options: MetricsOptions = {}
 ): StudyMetrics {
   const sizing = options.sizing ?? 'oneContract'

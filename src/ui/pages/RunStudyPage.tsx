@@ -48,11 +48,25 @@ export function RunStudyPage() {
 
   const sessions = useMemo(() => {
     try {
-      return tradingDaysBetween(from, to).length
+      const dates = tradingDaysBetween(from, to)
+      if (strategy.structure !== 'doubleCalendar') return dates.length
+
+      const built = strategy.build({ ...defaultStrategyParams(strategy), ...params })
+      if (!built.calendar || built.calendar.entryWeekdays.length === 0) return dates.length
+
+      // A scheduled calendar opens once per ISO week. Holidays shift the entry
+      // to another session in that week, so counting week buckets is exact even
+      // when the requested weekday is closed.
+      return new Set(dates.map((date) => {
+        const day = new Date(`${date}T12:00:00Z`)
+        const weekday = day.getUTCDay() || 7
+        day.setUTCDate(day.getUTCDate() - weekday + 1)
+        return day.toISOString().slice(0, 10)
+      })).size
     } catch {
       return 0
     }
-  }, [from, to])
+  }, [from, params, strategy, to])
 
   /*
    * Switching strategy resets both the parameters and the management set. The
@@ -76,7 +90,9 @@ export function RunStudyPage() {
       managements: selected,
       pricing: {
         model: 'close',
-        slippage: Number(slippage) || 0,
+        // Calendar fills are controlled by their four-leg package-spread
+        // assumption. The butterfly-only fixed slippage must not leak into it.
+        slippage: strategy.structure === 'doubleCalendar' ? 0 : Number(slippage) || 0,
         missingDataMode,
         maxStaleMinutes: Number(maxStale) || 5
       },
@@ -145,15 +161,17 @@ export function RunStudyPage() {
         <Card title="Execution assumptions" subtitle="Recorded with the run, since they change the numbers">
           <div className="mb-3">
             <Notice tone="info">
-              Safety checks are always on: entries must fill inside the entry window, carried quotes cannot exceed
-              the configured age, and every synthetic mark must remain between zero and the wing width. Strict mode
-              requires fresh same-minute prices for all three legs.
+              {strategy.structure === 'doubleCalendar'
+                ? 'Double calendars run from the local option archive. Entries must fill inside the entry window, carried quotes cannot exceed the configured age, and both calendars must have non-negative close values. Strict mode requires fresh same-minute prices for all four legs.'
+                : 'Safety checks are always on: entries must fill inside the entry window, carried quotes cannot exceed the configured age, and every synthetic mark must remain between zero and the wing width. Strict mode requires fresh same-minute prices for all three legs.'}
             </Notice>
           </div>
-          <div className="grid gap-3 md:grid-cols-4">
-            <Field label="Slippage" hint="Points against you, each way">
-              <Input type="number" step="0.05" value={slippage} onChange={(e) => setSlippage(e.target.value)} />
-            </Field>
+          <div className={`grid gap-3 ${strategy.structure === 'doubleCalendar' ? 'md:grid-cols-3' : 'md:grid-cols-4'}`}>
+            {strategy.structure !== 'doubleCalendar' && (
+              <Field label="Slippage" hint="Points against you, each way">
+                <Input type="number" step="0.05" value={slippage} onChange={(e) => setSlippage(e.target.value)} />
+              </Field>
+            )}
             <Field label="Missing data">
               <Select
                 value={missingDataMode}
@@ -183,25 +201,33 @@ export function RunStudyPage() {
               />
             </Field>
           </div>
-          <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-md border border-line bg-ground p-3">
-            <input
-              type="checkbox"
-              checked={offlineOnly}
-              onChange={(event) => setOfflineOnly(event.target.checked)}
-              className="mt-0.5"
-            />
-            <span>
-              <span className="block text-[12px] font-medium text-ink">Offline only</span>
-              <span className="block text-[10px] leading-relaxed text-ink-faint">
-                Read DuckDB only and refuse provider fallback. Use this to prove an archived strategy can run
-                after the ThetaData subscription is removed.
+          {strategy.structure === 'doubleCalendar' ? (
+            <Notice tone="warn">
+              Archive only: this study never falls back to a quote provider because selecting and following four
+              legs from whole chains would require tens of thousands of requests. Import the option archive first.
+            </Notice>
+          ) : (
+            <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-md border border-line bg-ground p-3">
+              <input
+                type="checkbox"
+                checked={offlineOnly}
+                onChange={(event) => setOfflineOnly(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="block text-[12px] font-medium text-ink">Offline only</span>
+                <span className="block text-[10px] leading-relaxed text-ink-faint">
+                  Read DuckDB only and refuse provider fallback. Use this to prove an archived strategy can run
+                  after the ThetaData subscription is removed.
+                </span>
               </span>
-            </span>
-          </label>
+            </label>
+          )}
         </Card>
 
         <ManagementSelector
           horizon={strategy.horizon}
+          structure={strategy.structure}
           selected={selected}
           defaults={strategy.defaultManagements}
           onChange={setSelected}
@@ -210,8 +236,9 @@ export function RunStudyPage() {
               <Badge tone="accent">{fmtInt(sessions)} candidate sessions</Badge>
               <Badge>{fmtInt(selected.length)} methods</Badge>
               <span className="text-[11px] text-ink-faint">
-                Uncached data is fetched from the configured paid providers, so a cold first run can take time; a
-                re-run over the same range is served from the local cache.
+                {strategy.structure === 'doubleCalendar'
+                  ? 'Calendar entries are served only from the local option archive.'
+                  : 'Uncached data is fetched from the configured paid providers, so a cold first run can take time; a re-run over the same range is served from the local cache.'}
               </span>
             </div>
           }

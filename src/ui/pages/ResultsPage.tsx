@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 import {
   normalizeSkipReason,
+  resolveStructure,
   type ManagementSummary,
   type StudyRunResult,
   type StudyRunSummary
@@ -44,6 +45,7 @@ export function ResultsPage() {
   const [highlighted, setHighlighted] = useState<string | null>(null)
 
   const selectedId = params.get('run')
+  const isCalendar = run ? resolveStructure(run.config) === 'doubleCalendar' : false
 
   const refresh = useCallback(async () => {
     setRuns(await window.api.study.list(50))
@@ -201,9 +203,13 @@ export function ResultsPage() {
                 <StatTile label="Trades" value={fmtInt(run.trades.length)} />
                 <StatTile label="Skipped" value={fmtInt(run.skipped.length)} tone={run.skipped.length > 0 ? 'warn' : 'neutral'} />
                 <StatTile
-                  label={run.config.targetDte === 0 ? 'Expiration' : 'Target DTE'}
-                  value={run.config.targetDte === 0 ? '0DTE' : run.config.targetDte}
-                  hint={`${run.config.wingWidth} wide`}
+                  label={isCalendar ? 'Expirations' : run.config.targetDte === 0 ? 'Expiration' : 'Target DTE'}
+                  value={isCalendar && run.config.calendar
+                    ? `${run.config.calendar.frontTargetDte} / ${run.config.calendar.backTargetDte} DTE`
+                    : run.config.targetDte === 0 ? '0DTE' : run.config.targetDte}
+                  hint={isCalendar && run.config.calendar
+                    ? `${Math.round(run.config.calendar.targetDelta * 100)}Δ shorts`
+                    : `${run.config.wingWidth} wide`}
                 />
                 <StatTile label="Version" value={run.appVersion} hint={run.gitCommit?.slice(0, 7)} />
               </div>
@@ -387,6 +393,7 @@ export function ResultsPage() {
 
             <AnalyticsPanel
               runId={run.runId}
+              structure={run.config.structure}
               strategyIds={run.summaries.map((s) => s.strategyId)}
               labels={Object.fromEntries(run.summaries.map((s) => [s.strategyId, s.strategyLabel]))}
             />

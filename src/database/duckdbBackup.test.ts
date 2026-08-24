@@ -46,7 +46,8 @@ describe('Database backup', () => {
       `INSERT INTO study_trades
        VALUES ('run-1', 'tp200', 1, 2, '2026-08-21', 6500, 30, 'bullish', 1, 3, 'profitTarget', false,
                200, 200, 1, 7, 200, -10, 1, 0, 1,
-               '{"definition":{"lowerTicker":"O:TEST","centerTicker":"O:TEST","upperTicker":"O:TEST"}}')`
+               '{"definition":{"lowerTicker":"O:TEST","centerTicker":"O:TEST","upperTicker":"O:TEST"}}',
+               'butterfly')`
     )
 
     const destination = join(dir, 'backup.duckdb')

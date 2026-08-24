@@ -1,14 +1,18 @@
 import {
   describeWingWidth,
+  resolveStructure,
+  type CalendarConfig,
   type EntryConfig,
   type ExpirationRule,
   type PlacementConfig,
   type StudyConfig,
+  type StudyStructure,
   type WingWidthBand,
   type WingWidthConfig
 } from './study.js'
 import {
   allManagementsFor,
+  DEFAULT_CALENDAR_MANAGEMENT_SET,
   DEFAULT_MANAGEMENT_SET,
   type TradeHorizon
 } from './managementCatalog.js'
@@ -75,11 +79,32 @@ export type StrategySlice = Pick<
   | 'maxDeviation'
   | 'placement'
   | 'wingWidth'
-> & { expirationWeekdays?: number[]; wingWidthRule?: WingWidthConfig }
+> & {
+  expirationWeekdays?: number[]
+  wingWidthRule?: WingWidthConfig
+  /**
+   * Set by a strategy that trades something other than a butterfly.
+   *
+   * The butterfly fields above are still filled in - with values the calendar
+   * engine never reads - rather than being made optional. A strategy is the one
+   * place that knows what it is building, so it is also the right place to
+   * decide what the inert fields say.
+   */
+  structure?: StudyStructure
+  calendar?: CalendarConfig
+}
 
 export interface StrategyDefinition {
   id: string
   label: string
+  /**
+   * The structure this strategy builds. Absent means butterfly.
+   *
+   * Duplicated from what `build` puts in its slice so the UI can pick the right
+   * management catalogue before it has built anything, which it must do to
+   * render the selector at all.
+   */
+  structure?: StudyStructure
   /** One line, for the picker. */
   summary: string
   /**
@@ -666,12 +691,173 @@ const FIXED_ZERO_DTE: StrategyDefinition = {
   })
 }
 
+/**
+ * The double calendar.
+ *
+ * The catalogue's first non-butterfly structure, and it stretches the shape of
+ * a "strategy" in one way worth naming: its entry rule is a schedule rather
+ * than a signal. There is no direction to pick, because the position is neutral
+ * by construction - it wants the index to sit still between its short strikes -
+ * so the entry configuration is a weekday and a clock time, and everything that
+ * would be a *placement* decision for a butterfly is a delta instead.
+ *
+ * The butterfly fields in the slice are filled with inert values the calendar
+ * engine never reads. They are not optional because dozens of call sites read
+ * them unconditionally today, and making them nullable to serve one strategy
+ * would push a null check into all of them.
+ */
+const DOUBLE_CALENDAR: StrategyDefinition = {
+  id: 'double-calendar',
+  label: 'Double calendar',
+  structure: 'doubleCalendar',
+  summary: 'Weekly put and call calendars at a target delta, sharing one pair of expirations.',
+  rules: [
+    'On the scheduled weekday, at the entry time, sell a put and a call in the near expiration and buy the same two strikes in the far one.',
+    'Both strikes are chosen by delta, measured on the short expiration from the implied volatility of each strike, and taken from the ladder both expirations list.',
+    'The forward and discount factor come from put-call parity across the quoted chain, so no interest rate is assumed.',
+    'Targets and stops are a percentage of the debit paid, which is the capital at risk; a calendar has no defined maximum profit.',
+    'Rules evaluate on what closing the position would realize after crossing four spreads, not on the midpoint.',
+    'Any position still open is closed on the front expiration day at the configured time, never carried into settlement.'
+  ],
+  horizon: 'multiDay',
+  // The index level anchors the chain search at the entry minute, and the
+  // strike-breach rules read it for every minute of the path.
+  requiresIntradayIndex: true,
+  params: [
+    { key: 'entryTime', label: 'Entry time (ET)', kind: 'time', default: '10:00' },
+    {
+      key: 'entryWindowMinutes',
+      label: 'Entry window',
+      kind: 'number',
+      default: 30,
+      min: 0,
+      max: 120,
+      step: 5,
+      hint: 'Minutes past the entry time a fill may drift while waiting for quotes'
+    },
+    {
+      key: 'entryWeekday',
+      label: 'Open on',
+      kind: 'choice',
+      default: '1',
+      options: [
+        { value: '1', label: 'Monday' },
+        { value: '2', label: 'Tuesday' },
+        { value: '3', label: 'Wednesday' },
+        { value: '4', label: 'Thursday' },
+        { value: '5', label: 'Friday' },
+        { value: '0', label: 'Every session (overlapping)' }
+      ],
+      hint: 'One position a week. A holiday shifts that week to its first open session rather than skipping it'
+    },
+    {
+      key: 'targetDelta',
+      label: 'Short strike delta',
+      kind: 'number',
+      default: 30,
+      min: 5,
+      max: 50,
+      step: 1,
+      hint: 'Absolute delta for both shorts, in whole points. Closer to the money concentrates the decay a calendar earns from'
+    },
+    {
+      key: 'frontDte',
+      label: 'Short expiration DTE',
+      kind: 'number',
+      default: 14,
+      min: 1,
+      max: 90,
+      step: 1
+    },
+    {
+      key: 'backDte',
+      label: 'Long expiration DTE',
+      kind: 'number',
+      default: 21,
+      min: 2,
+      max: 120,
+      step: 1,
+      hint: 'Must be later than the short. A wider gap between the two is a materially different trade, not a tuned one'
+    },
+    {
+      key: 'maxDteDeviation',
+      label: 'DTE tolerance',
+      kind: 'number',
+      default: 3,
+      min: 0,
+      max: 10,
+      step: 1,
+      hint: 'How far a listed expiration may sit from either target before the session is skipped'
+    },
+    {
+      key: 'horizonTime',
+      label: 'Close by (ET)',
+      kind: 'time',
+      default: '15:45',
+      hint: 'On the short expiration day. A double calendar carried through the settlement of its shorts is a different structure'
+    },
+    {
+      key: 'spreadFraction',
+      label: 'Spread paid',
+      kind: 'number',
+      default: 0.5,
+      min: 0,
+      max: 1,
+      step: 0.1,
+      hint: 'Share of the package spread given up on each fill. 0 is the midpoint, 1 pays the full offer. Four legs make this the dominant assumption'
+    },
+    {
+      key: 'commissionPerContract',
+      label: 'Commission per contract',
+      kind: 'number',
+      default: 1.3,
+      min: 0,
+      step: 0.05,
+      hint: 'Per side. Four contracts a lot, so eight per round trip'
+    }
+  ],
+  // Management is simulated against an already-reconstructed path, so every
+  // rule costs the same data as one. There is no reason to offer a subset.
+  defaultManagements: [...DEFAULT_CALENDAR_MANAGEMENT_SET],
+  sweepAxes: ['profitTarget', 'stopLoss', 'targetDelta', 'frontDte', 'backDte', 'spreadFraction'],
+  build: (params) => {
+    const weekday = num(params, 'entryWeekday', 1)
+    const frontDte = num(params, 'frontDte', 14)
+    return {
+      entryTime: str(params, 'entryTime', '10:00'),
+      entryWindowMinutes: num(params, 'entryWindowMinutes', 30),
+      // A calendar has no direction to choose. `fixed` is the catalogue's
+      // no-signal entry, and the direction it names is never read.
+      entry: { type: 'fixed', direction: 'bearish' },
+      targetDte: frontDte,
+      expirationRule: 'nearest',
+      maxDeviation: num(params, 'maxDteDeviation', 3),
+      // Inert for this structure; see the note on StrategySlice.
+      placement: { type: 'fixedDistance', offsetPoints: 0 },
+      wingWidth: 0,
+      structure: 'doubleCalendar',
+      calendar: {
+        root: 'SPXW',
+        targetDelta: num(params, 'targetDelta', 30) / 100,
+        frontTargetDte: frontDte,
+        backTargetDte: num(params, 'backDte', 21),
+        maxDteDeviation: num(params, 'maxDteDeviation', 3),
+        entryWeekdays: weekday >= 1 && weekday <= 5 ? [weekday] : [],
+        horizonTime: str(params, 'horizonTime', '15:45'),
+        spreadFraction: num(params, 'spreadFraction', 0.5),
+        commissionPerContract: num(params, 'commissionPerContract', 1.3)
+      }
+    }
+  }
+}
+
 export const STRATEGY_CATALOG: readonly StrategyDefinition[] = [
   EMA_SWING_VIX_WIDTH,
   EMA_ZERO_DTE,
   ORB_ZERO_DTE,
   EMA_SWING,
-  FIXED_ZERO_DTE
+  FIXED_ZERO_DTE,
+  DOUBLE_CALENDAR
 ]
 
 export const DEFAULT_STRATEGY_ID = EMA_SWING_VIX_WIDTH.id
@@ -770,6 +956,16 @@ export function describeEntry(config: StudyConfig): string {
 
 /** Short summary of a configuration, for run lists and forward-test headers. */
 export function describeConfig(config: StudyConfig): string {
+  if (resolveStructure(config) === 'doubleCalendar' && config.calendar) {
+    const calendar = config.calendar
+    const schedule = calendar.entryWeekdays.length === 0
+      ? 'every session'
+      : calendar.entryWeekdays.map((day) => ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][day] ?? `day ${day}`).join('/')
+    return (
+      `${Math.round(calendar.targetDelta * 100)}Δ double calendar | ` +
+      `${calendar.frontTargetDte}/${calendar.backTargetDte} DTE | ${schedule} at ${config.entryTime} ET`
+    )
+  }
   const dte = config.targetDte === 0 ? '0DTE' : `${config.targetDte} DTE`
   return `${describeEntry(config)} | ${dte} | ${describeWingWidth(config)} | ${describePlacement(config.placement)}`
 }

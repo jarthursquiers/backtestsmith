@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react'
 import {
-  allManagementsFor,
-  managementGroups,
-  managementsForHorizon,
+  managementGroupsFor,
+  managementsFor,
   type TradeHorizon
 } from '../../shared/managementCatalog.js'
+import type { StudyStructure } from '../../shared/study.js'
 import { Button, Card, Notice } from './primitives.js'
 
 /**
@@ -18,6 +18,7 @@ import { Button, Card, Notice } from './primitives.js'
 
 export interface ManagementSelectorProps {
   horizon: TradeHorizon
+  structure?: StudyStructure
   selected: string[]
   onChange(ids: string[]): void
   /** Restores whatever the current strategy considers its default comparison. */
@@ -27,13 +28,14 @@ export interface ManagementSelectorProps {
 
 export function ManagementSelector({
   horizon,
+  structure,
   selected,
   onChange,
   defaults,
   footer
 }: ManagementSelectorProps) {
-  const methods = managementsForHorizon(horizon)
-  const groups = managementGroups(horizon)
+  const methods = managementsFor(structure, horizon)
+  const groups = managementGroupsFor(structure, horizon)
   const selectedSet = new Set(selected)
 
   const toggle = (id: string): void =>
@@ -51,7 +53,7 @@ export function ManagementSelector({
       subtitle="Every selected method sees the identical entry population, which is what makes the comparison valid. Management is simulated against an already-reconstructed path, so selecting them all costs no extra data."
       actions={
         <div className="flex gap-2">
-          <Button onClick={() => onChange(allManagementsFor(horizon))}>All</Button>
+          <Button onClick={() => onChange(methods.map((method) => method.id))}>All</Button>
           <Button onClick={() => onChange([...defaults])}>Strategy default</Button>
           <Button onClick={() => onChange([])}>None</Button>
         </div>

@@ -34,6 +34,11 @@ import {
 import type { ParityValidationRequest, ParityValidationResponse } from '../../shared/parity.js'
 import { sessionMinuteGrid } from '../../backtest/reconstruct.js'
 import { preflightStudy, runStudy, type StudyDataSource } from '../../backtest/studyRunner.js'
+import {
+  preflightCalendarStudy,
+  runCalendarStudyForConfig,
+  type CalendarStudyRunHooks
+} from './calendarStudyRun.js'
 import { prepareStudyData } from '../../backtest/studyPreparation.js'
 import { computeMetrics } from '../../backtest/metrics.js'
 import { buildAnalyticsReport } from '../../backtest/conditionalPaths.js'
@@ -50,7 +55,7 @@ import type {
   StudyProgress,
   StudyRunResult
 } from '../../shared/study.js'
-import { resolveIndexTicker } from '../../shared/study.js'
+import { resolveIndexTicker, resolveStructure } from '../../shared/study.js'
 import type { ExitStrategy } from '../../backtest/exits.js'
 import { buildManagementSet } from '../../backtest/managementSets.js'
 import { allManagementsFor } from '../../shared/managementCatalog.js'
@@ -527,7 +532,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   // --- studies --------------------------------------------------------------
   handle(IPC.studyPreflight, (config: StudyConfig): Promise<StudyPreflight> =>
-    preflightStudy(config, buildStudySource(services))
+    resolveStructure(config) === 'doubleCalendar'
+      ? preflightCalendarStudy(config, services.store)
+      : preflightStudy(config, buildStudySource(services))
   )
 
   handle(IPC.studyRun, async (config: StudyConfig, label?: string): Promise<StudyRunResult> => {
@@ -555,6 +562,80 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     let lastDate: string | undefined
 
     try {
+      /*
+       * A double calendar takes an entirely separate path: its own engine, and
+       * an archive-only data source. It shares this handler for the run lock,
+       * the progress channel, the save, and the failure reporting - everything
+       * a caller sees - while sharing none of the butterfly preparation, which
+       * would fetch chains it does not use and skip the ones it does.
+       */
+      if (resolveStructure(config) === 'doubleCalendar') {
+        const preflight = await preflightCalendarStudy(config, services.store)
+        for (const blocker of preflight.blockers) console.log('[study] BLOCKER: ' + blocker)
+        for (const warning of preflight.warnings) console.log('[study] warning: ' + warning)
+        if (preflight.blockers.length > 0) throw new Error(preflight.blockers.join(' '))
+
+        console.log(
+          `[study] starting double calendar ${config.from}..${config.to}  ` +
+            `${preflight.sessions} scheduled entries  ${config.managements.length} methods`
+        )
+
+        const calendarResult = await runCalendarStudyForConfig(
+          config,
+          services.store,
+          app.getVersion(),
+          process.env.GIT_COMMIT,
+          {
+            signal: controller.signal,
+            onSkip: ({ date, reason }) => {
+              console.log(`[study]   skip ${date}: ${reason}`)
+            },
+            onProgress: (progress) => {
+              lastPhase = 'entries'
+              lastCompleted = progress.completed
+              lastTotal = progress.total
+              lastDate = progress.currentDate
+
+              const now = Date.now()
+              if (progress.completed !== lastLoggedSession && now - lastLogged > 250) {
+                lastLoggedSession = progress.completed
+                lastLogged = now
+                logStudyLine(progress, 0)
+              }
+              if (now - lastSent < 400) return
+              lastSent = now
+              const window = getWindow()
+              if (window && !window.isDestroyed()) {
+                window.webContents.send(IPC.studyProgressEvent, progress)
+              }
+            }
+          }
+        )
+
+        console.log(
+          `[study] finished  ${calendarResult.entryCount} entries  ` +
+            `${calendarResult.skipped.length} skipped  ` +
+            `${humanDuration(Date.now() - orchestrationStartedAt)}  0 requests`
+        )
+
+        await services.studies.save(calendarResult, label)
+
+        const doneWindow = getWindow()
+        if (doneWindow && !doneWindow.isDestroyed()) {
+          doneWindow.webContents.send(IPC.studyProgressEvent, {
+            phase: controller.signal.aborted ? 'cancelled' : 'done',
+            completed: calendarResult.entriesAttempted,
+            total: calendarResult.entriesAttempted,
+            tradesGenerated: calendarResult.entryCount,
+            skipped: calendarResult.skipped.length,
+            elapsedMs: Date.now() - orchestrationStartedAt,
+            apiRequests: 0
+          } satisfies StudyProgress)
+        }
+
+        return calendarResult
+      }
+
       const preparation = config.offlineOnly
         ? null
         : await prepareStudyData(
@@ -820,22 +901,49 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       for (const point of points) {
         if (controller.signal.aborted) break
 
-        const outcome = await runStudy(point.config, buildStudySource(services, undefined, point.config.offlineOnly === true), {
-          signal: controller.signal,
-          onProgress: (progress) => {
-            const window = getWindow()
-            if (window && !window.isDestroyed()) {
-              window.webContents.send(IPC.studyProgressEvent, {
-                ...progress,
-                // Report sweep position so the UI can show combination N of M.
-                currentDate: `${point.index + 1}/${points.length} · ${progress.currentDate ?? ''}`
-              })
-            }
+        const reportSweepProgress = (progress: StudyProgress): void => {
+          const window = getWindow()
+          if (window && !window.isDestroyed()) {
+            window.webContents.send(IPC.studyProgressEvent, {
+              ...progress,
+              // Report sweep position so the UI can show combination N of M.
+              currentDate: `${point.index + 1}/${points.length} · ${progress.currentDate ?? ''}`
+            })
           }
-        })
+        }
 
-        const all = [...new Set(outcome.trades.map((t) => t.strategyId))].map((id) => {
-          const trades = outcome.trades.filter((t) => t.strategyId === id)
+        let runResult: StudyRunResult
+        if (resolveStructure(point.config) === 'doubleCalendar') {
+          runResult = await runCalendarStudyForConfig(
+            point.config,
+            services.store,
+            app.getVersion(),
+            process.env.GIT_COMMIT,
+            { signal: controller.signal, onProgress: reportSweepProgress }
+          )
+        } else {
+          const outcome = await runStudy(
+            point.config,
+            buildStudySource(services, undefined, point.config.offlineOnly === true),
+            { signal: controller.signal, onProgress: reportSweepProgress }
+          )
+          runResult = {
+            runId: randomBytes(8).toString('hex'),
+            createdAt: Date.now(),
+            config: point.config,
+            entryCount: outcome.series.length,
+            entriesAttempted: outcome.entriesAttempted,
+            skipped: outcome.skipped,
+            summaries: [],
+            trades: outcome.trades,
+            sizing: 'oneContract',
+            appVersion: app.getVersion(),
+            ...(process.env.GIT_COMMIT ? { gitCommit: process.env.GIT_COMMIT } : {})
+          }
+        }
+
+        const all = [...new Set(runResult.trades.map((t) => t.strategyId))].map((id) => {
+          const trades = runResult.trades.filter((t) => t.strategyId === id)
           return {
             strategyId: id,
             strategyLabel: trades[0]?.strategyLabel ?? id,
@@ -847,26 +955,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           ? all.reduce((a, b) => (scoreObjective(b.metrics, objective) > scoreObjective(a.metrics, objective) ? b : a))
           : null
 
-        const runResult: StudyRunResult = {
-          runId: randomBytes(8).toString('hex'),
-          createdAt: Date.now(),
-          config: point.config,
-          entryCount: outcome.series.length,
-          entriesAttempted: outcome.entriesAttempted,
-          skipped: outcome.skipped,
-          summaries: all,
-          trades: outcome.trades,
-          sizing: 'oneContract',
-          appVersion: app.getVersion(),
-          ...(process.env.GIT_COMMIT ? { gitCommit: process.env.GIT_COMMIT } : {})
-        }
+        runResult.summaries = all
         await services.studies.save(runResult, `sweep ${JSON.stringify(point.values)}`)
 
         results.push({
           index: point.index,
           values: point.values,
           runId: runResult.runId,
-          entryCount: outcome.series.length,
+          entryCount: runResult.entryCount,
           best,
           all
         })

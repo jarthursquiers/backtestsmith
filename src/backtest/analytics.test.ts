@@ -293,6 +293,39 @@ describe('parameter sweep', () => {
     }
   })
 
+  it('applies double-calendar entry axes to the nested calendar configuration', () => {
+    const calendar: StudyConfig = {
+      ...BASE,
+      structure: 'doubleCalendar',
+      calendar: {
+        root: 'SPXW', targetDelta: 0.3, frontTargetDte: 14, backTargetDte: 21,
+        maxDteDeviation: 3, entryWeekdays: [1], horizonTime: '15:45',
+        spreadFraction: 0.5, commissionPerContract: 1.3
+      }
+    }
+    const points = expandSweep(calendar, [
+      { name: 'targetDelta', values: [20, 30] },
+      { name: 'frontDte', values: [7, 14] },
+      { name: 'backDte', values: [21] },
+      { name: 'spreadFraction', values: [0, 1] }
+    ])
+
+    expect(points).toHaveLength(8)
+    expect(points[0]!.config.calendar).toMatchObject({
+      targetDelta: 0.2,
+      frontTargetDte: 7,
+      backTargetDte: 21,
+      spreadFraction: 0
+    })
+    expect(points[0]!.config.targetDte).toBe(7)
+    expect(points.at(-1)!.config.calendar).toMatchObject({
+      targetDelta: 0.3,
+      frontTargetDte: 14,
+      backTargetDte: 21,
+      spreadFraction: 1
+    })
+  })
+
   it('estimates cost so an overnight sweep is not started by accident', () => {
     const cheap = estimateSweepCost([{ name: 'profitTarget', values: [25, 50, 100] }])
     expect(cheap.entryCombinations).toBe(1)

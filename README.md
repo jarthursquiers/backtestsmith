@@ -1,16 +1,18 @@
 # Backtestsmith
 
-A local desktop research application for studying historical SPX butterfly option trades.
+A local desktop research application for studying historical SPX option trades.
 
 The central research question it exists to answer:
 
-> Given a consistent method for entering SPX butterflies, what management method
+> Given a consistent method for entering a position, what management method
 > produces the best risk-adjusted results?
 
-The first entry method studied was a 9 EMA rule at approximately 7 DTE. Entry
-methods are now a catalogue - see [Strategies](#strategies) - so the same
-question can be asked of a 0DTE opening range breakout, or of anything added
-later, against an identical set of exit rules.
+The first entry method studied was a 9 EMA rule at approximately 7 DTE on a
+butterfly. Entry methods are now a catalogue - see [Strategies](#strategies) -
+so the same question can be asked of a 0DTE opening range breakout, or of
+anything added later, against an identical set of exit rules. A second
+structure, the [double calendar](#double-calendars), is studied by a parallel
+engine that shares the statistics but not the assumptions.
 
 This is a research tool, not a trading platform and not an optimizer for finding
 the prettiest historical result.
@@ -34,6 +36,7 @@ Built in verifiable phases. **Phases 1 and 2 are complete.**
 | 11 | Generic parameter sweep | Done |
 | 12 | Exports, analytics charts, diagnostics | Done |
 | 13 | Strategy catalogue, signal-triggered entries, 0DTE opening range breakout | Done |
+| 14 | Double calendar engine and study, run off the local quote archive | Done |
 
 ## Getting started
 
@@ -86,6 +89,7 @@ MASSIVE_API_KEY=your-key-here
 | `npm test` | Run the engine test suite |
 | `npm run typecheck` | Typecheck main and renderer projects |
 | `npm run package` | Produce an unpacked Windows build |
+| `npm run study:calendar` | Run the double calendar study off the local archive |
 
 ## Architecture
 
@@ -593,6 +597,113 @@ never pretends otherwise:
   chooses the favorable outcome.
 - **Excursions are measured over the held portion only**, so a rule is never
   credited or penalised for a path it exited before.
+
+## Double calendars
+
+A second structure, studied by a parallel engine rather than by stretching the
+butterfly one. A double calendar sells a put and a call at roughly 30 delta in a
+near expiration and buys the same two strikes in a later one, so it is four
+legs across two expirations, entered for a net debit, and it profits while the
+index stays between its short strikes.
+
+It gets its own domain type, reconstruction, exits and runner
+(`domain/doubleCalendar.ts`, `backtest/reconstructCalendar.ts`,
+`backtest/calendarExits.ts`, `backtest/calendarStudy.ts`) for one substantive
+reason. Every validity check in the butterfly path rests on the position's value
+being bounded by its wing width: entry debits are refused outside it, marks are
+rejected outside it, intra-minute reachability is clamped to it, and a profit
+target above it is known in advance to be unfillable. A calendar has no such
+ceiling - only its maximum *loss* is knowable at entry - so reusing that path
+would have meant disabling the checks that make it trustworthy. Statistics are
+shared: `computeMetrics` takes a structural `MetricsTrade` that both result
+types satisfy, so expectancy and drawdown cannot drift between the two.
+
+### Choosing the strikes
+
+Butterflies are placed by distance, which is observable. Calendars are placed by
+delta, which is not, so `backtest/optionMath.ts` supplies Black-76 and an
+implied-volatility solve. The model assumption is kept as small as it can be:
+
+1. The forward and the discount factor are recovered from **put-call parity**
+   across the quoted chain - arithmetic on observed prices, so no interest rate
+   and no dividend yield is assumed. The fitted discount factor is capped at one,
+   since quote noise occasionally puts it slightly above, which would be a
+   negative rate.
+2. Each strike's implied volatility is solved from **its own midpoint**, so the
+   SPX skew is carried rather than averaged away. A single at-the-money
+   volatility across the chain misplaces the 30-delta put by six to ten strikes.
+
+Both strikes are chosen from the **shared** ladder of the two expirations. SPX
+does not list the same strikes in each - the nearer weekly carries five-point
+strikes considerably further out than the expiration a week behind it - so
+selecting from the front chain alone picks strikes the back month never listed.
+
+### Execution, and why it dominates
+
+Four legs means four bid-ask spreads crossed on entry and four more on exit, on
+a structure whose entire edge is a few points of decay. Friction is therefore
+modelled against the **quoted** spread rather than as a flat allowance, and each
+observation carries two values:
+
+- `midValue`, the package midpoint - what the position is worth.
+- `netValue`, the midpoint less exit friction and commissions - what closing it
+  right now would actually realize.
+
+**Every management rule is evaluated against `netValue`**, so a "+25% target"
+means the trader banked 25% rather than that a theoretical mark touched it. All
+percentages are of the **entry debit**, which is the capital genuinely at risk;
+a calendar has no defined maximum profit for a "percent of max" to refer to.
+
+### Reading a one-per-minute quote archive
+
+The archive samples the NBBO once a minute, and two artifacts in it will destroy
+a study that takes each sample at face value. Both are handled in
+`reconstructCalendar.ts` and both have regression tests.
+
+- **A zero offer is not a price.** The 09:30 snapshot is stored as `0.00` bid,
+  `0.00` offer on every contract - the state before the opening rotation posts
+  quotes. Read as a price it makes the package worth nothing, which is an
+  instant total loss; left in, *every* stop in the study fires at 09:30 on the
+  first morning after entry and nowhere else.
+- **A single sample is a poor estimate of executable width.** A contract quoted
+  0.50 wide all session shows 4.70 in one minute and 0.70 either side, because
+  the sample caught a market maker mid-reprice. Its midpoint is wrong too. Fills
+  are therefore charged against a **trailing** 15-minute median of the leg's own
+  quoted width - trailing, not centred, because a centred window would price a
+  fill using quotes from after it - and a snapshot more than 2.5x wider than that
+  running width is rejected as a mark entirely, counted against data quality like
+  any minute that could not be quoted.
+
+### Management rules
+
+Resolved by parsing the id rather than from a curated table, since the question
+here includes targets the butterfly catalogue would not contain: `hold`, `tp25`,
+`sl50`, `tp25-sl50`, `dte7` (days to the front expiration), `day5` (sessions
+held), `trail25-50pct`, and `breach` - close when the index reaches a short
+strike, optionally offset (`breach-25` arms 25 points inside it). Any two
+compose with `+`, as in `tp25-sl50+breach`. `breach` is the calendar's structural
+rule and the inverse of the butterfly's centre touch: a butterfly wants the index
+to arrive, a calendar wants it to stay away.
+
+The horizon is the front expiration, closed at 15:45 rather than carried into
+settlement - a double calendar held through its short legs' expiration is no
+longer a double calendar.
+
+### Running it
+
+The study reads the cached DuckDB archive directly, read-only, and never calls a
+provider (`data/archiveSource.ts`). Every contract it needs is already cached,
+so a miss is a gap in the archive rather than a cue to fetch - and four contracts
+per trade across every session of their lives would take days at five API calls
+a minute.
+
+```bash
+npm run study:calendar -- --from 2025-08-25 --to 2026-07-27   --scenarios core,delta,dte,friction,weekday,daily
+```
+
+`core` is Monday entries at 30 delta into 14/21 DTE; the other groups vary one
+thing each so the headline choice can be judged rather than trusted. Results
+print as a table per scenario and are written to `studies/`.
 
 ## SPX underlying data
 

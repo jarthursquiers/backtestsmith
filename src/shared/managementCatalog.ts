@@ -84,6 +84,96 @@ export const MANAGEMENT_CATALOG: readonly ManagementMethod[] = [
   { id: 'dte1', label: 'Exit at 1 DTE', group: 'Days to expiration', horizons: ['multiDay'] }
 ]
 
+/**
+ * Management methods for a double calendar.
+ *
+ * A separate list, not a filter of the butterfly one, because the percentages
+ * mean different things and the useful ranges barely overlap. A butterfly
+ * bought for two points routinely returns several hundred percent of its debit,
+ * so its catalogue runs to +300%; a calendar bought for thirty-five points is
+ * managed between +10% and +50%, and offering it a +300% target would be
+ * offering a rule that can never fire.
+ *
+ * Every percentage here is of the **entry debit** - the capital at risk - since
+ * a calendar has no defined maximum profit for a "percent of max" to refer to.
+ */
+export const CALENDAR_MANAGEMENT_CATALOG: readonly ManagementMethod[] = [
+  { id: 'hold', label: 'Hold to front expiration', group: 'Baseline' },
+
+  { id: 'tp10', label: '+10% of debit', group: 'Profit target' },
+  { id: 'tp15', label: '+15% of debit', group: 'Profit target' },
+  { id: 'tp20', label: '+20% of debit', group: 'Profit target' },
+  { id: 'tp25', label: '+25% of debit', group: 'Profit target' },
+  { id: 'tp30', label: '+30% of debit', group: 'Profit target' },
+  { id: 'tp40', label: '+40% of debit', group: 'Profit target' },
+  { id: 'tp50', label: '+50% of debit', group: 'Profit target' },
+
+  { id: 'sl25', label: '-25% of debit', group: 'Stop' },
+  { id: 'sl50', label: '-50% of debit', group: 'Stop' },
+  { id: 'sl100', label: '-100% of debit', group: 'Stop' },
+
+  { id: 'tp15-sl50', label: '+15% / -50%', group: 'Target with stop' },
+  { id: 'tp20-sl40', label: '+20% / -40%', group: 'Target with stop' },
+  { id: 'tp25-sl25', label: '+25% / -25%', group: 'Target with stop' },
+  { id: 'tp25-sl50', label: '+25% / -50%', group: 'Target with stop' },
+  { id: 'tp30-sl60', label: '+30% / -60%', group: 'Target with stop' },
+  { id: 'tp50-sl50', label: '+50% / -50%', group: 'Target with stop' },
+
+  // The calendar analogue of the butterfly centre touch, inverted: a butterfly
+  // wants the index to arrive, a calendar wants it to stay away.
+  { id: 'breach-25', label: 'Close 25 points inside a short strike', group: 'Underlying location' },
+  { id: 'breach', label: 'Close on a short strike touch', group: 'Underlying location' },
+  { id: 'breach+25', label: 'Close 25 points beyond a short strike', group: 'Underlying location' },
+  { id: 'tp25+breach', label: '+25% or a short strike touch', group: 'Underlying location' },
+  { id: 'tp50+breach', label: '+50% or a short strike touch', group: 'Underlying location' },
+
+  { id: 'trail15-50pct', label: 'Trail after +15%, give back half the peak', group: 'Trailing' },
+  { id: 'trail25-30pct', label: 'Trail after +25%, give back 30% of peak', group: 'Trailing' },
+  { id: 'trail25-50pct', label: 'Trail after +25%, give back half the peak', group: 'Trailing' },
+  { id: 'trail40-50pct', label: 'Trail after +40%, give back half the peak', group: 'Trailing' },
+
+  { id: 'dte7', label: 'Close at 7 DTE', group: 'Days to expiration' },
+  { id: 'dte5', label: 'Close at 5 DTE', group: 'Days to expiration' },
+  { id: 'dte3', label: 'Close at 3 DTE', group: 'Days to expiration' },
+  { id: 'dte1', label: 'Close at 1 DTE', group: 'Days to expiration' },
+
+  { id: 'day3', label: 'Close after 3 sessions', group: 'Sessions held' },
+  { id: 'day5', label: 'Close after 5 sessions', group: 'Sessions held' },
+  { id: 'day7', label: 'Close after 7 sessions', group: 'Sessions held' }
+]
+
+/** The catalogue for a structure. Butterfly unless told otherwise. */
+export function managementCatalogFor(structure?: string): readonly ManagementMethod[] {
+  return structure === 'doubleCalendar' ? CALENDAR_MANAGEMENT_CATALOG : MANAGEMENT_CATALOG
+}
+
+/** Methods a structure offers for a horizon, in catalogue order. */
+export function managementsFor(structure: string | undefined, horizon: TradeHorizon): ManagementMethod[] {
+  return managementCatalogFor(structure).filter(
+    (method) => !method.horizons || method.horizons.includes(horizon)
+  )
+}
+
+/** Distinct group names a structure offers, in catalogue order. */
+export function managementGroupsFor(structure: string | undefined, horizon: TradeHorizon): string[] {
+  return [...new Set(managementsFor(structure, horizon).map((method) => method.group))]
+}
+
+/** Human label for a management id within a structure. */
+export function managementLabelFor(structure: string | undefined, id: string): string {
+  return managementCatalogFor(structure).find((method) => method.id === id)?.label ?? id
+}
+
+/**
+ * The comparison set the first double calendar study was run with.
+ *
+ * Spans the range the structure is actually managed in, and deliberately keeps
+ * the rules that lost money - the stops and the strike-touch exits - because a
+ * comparison that quietly drops the losers is not a comparison.
+ */
+export const DEFAULT_CALENDAR_MANAGEMENT_SET: readonly string[] =
+  CALENDAR_MANAGEMENT_CATALOG.map((method) => method.id)
+
 const BY_ID = new Map(MANAGEMENT_CATALOG.map((method) => [method.id, method]))
 
 /** Human label for a management id, falling back to the id itself. */

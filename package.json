@@ -8,7 +8,10 @@
   "private": true,
   "build": {
     "extraResources": [
-      { "from": "src/data/thetadata/bridge.py", "to": "thetadata/bridge.py" }
+      {
+        "from": "src/data/thetadata/bridge.py",
+        "to": "thetadata/bridge.py"
+      }
     ]
   },
   "scripts": {
@@ -18,7 +21,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "package": "npm run build && electron-builder --win --dir"
+    "package": "npm run build && electron-builder --win --dir",
+    "study:calendar": "vite-node scripts/run-double-calendar-study.ts"
   },
   "dependencies": {
     "@duckdb/node-api": "^1.5.5-r.4",

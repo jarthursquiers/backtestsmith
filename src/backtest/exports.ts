@@ -1,6 +1,8 @@
 import type { StudyRunResult } from '../shared/study.js'
-import type { ButterflySeries } from '../domain/butterfly.js'
-import type { TradeResult } from '../shared/trade.js'
+import type { ButterflyDefinition, ButterflyPriceAudit, ButterflySeries } from '../domain/butterfly.js'
+import type { CalendarPriceAudit, DoubleCalendarDefinition } from '../domain/doubleCalendar.js'
+import { CALENDAR_LEG_ROLES } from '../domain/doubleCalendar.js'
+import { isCalendarDefinition, type TradeResult } from '../shared/trade.js'
 
 /**
  * Export formats.
@@ -38,16 +40,51 @@ const TRADE_HEADER = [
   'exit_max_leg_age_ms'
 ]
 
-/** Trade-level export, one row per trade per management method. */
+const CALENDAR_TRADE_HEADER = [
+  'run_id', 'strategy_id', 'strategy_label',
+  'entry_utc', 'entry_underlying',
+  'front_expiration', 'back_expiration', 'put_strike', 'call_strike', 'tent_width', 'quantity',
+  // What the delta selection actually measured, so a run can be pivoted on the
+  // entry condition rather than only on the strikes it produced.
+  'put_delta', 'call_delta', 'put_iv', 'call_iv', 'put_back_iv', 'call_back_iv',
+  'forward', 'front_dte', 'back_dte',
+  'entry_debit', 'entry_mid', 'exit_utc', 'exit_value', 'exit_reason',
+  'pnl_dollars', 'pnl_pct', 'holding_minutes', 'sessions_held', 'exit_front_dte',
+  'mfe_pct', 'mae_pct', 'mfe_capture', 'profit_giveback', 'max_breach_points',
+  'coverage', 'freshness', 'invalid_price_minutes',
+  'entry_package_spread', 'exit_package_spread',
+  ...CALENDAR_LEG_ROLES.flatMap((role) => [`entry_${role}_bid`, `entry_${role}_ask`]),
+  ...CALENDAR_LEG_ROLES.flatMap((role) => [`exit_${role}_bid`, `exit_${role}_ask`])
+]
+
+/**
+ * Trade-level export, one row per trade per management method.
+ *
+ * A study is homogeneous - one structure throughout - so the column set is
+ * chosen from the first trade rather than reconciled row by row. A butterfly's
+ * three legs on one expiration and a double calendar's four across two have
+ * almost no columns in common beyond the result itself, and forcing them into
+ * one header would leave most cells blank in both directions.
+ */
 export function tradesToCsv(runId: string, trades: readonly TradeResult[]): string {
+  const first = trades[0]
+  return first && isCalendarDefinition(first.definition)
+    ? calendarTradesToCsv(runId, trades)
+    : butterflyTradesToCsv(runId, trades)
+}
+
+function butterflyTradesToCsv(runId: string, trades: readonly TradeResult[]): string {
   const rows: unknown[][] = [TRADE_HEADER]
   for (const t of trades) {
+    const d = t.definition as ButterflyDefinition
+    const entry = t.entryAudit as ButterflyPriceAudit | undefined
+    const exit = t.exitAudit as ButterflyPriceAudit | undefined
     rows.push([
       runId, t.strategyId, t.strategyLabel,
       new Date(t.entryTimestamp).toISOString(), t.entryUnderlying ?? '',
-      t.definition.expiration, t.definition.direction, t.definition.optionType,
-      t.definition.lowerStrike, t.definition.centerStrike, t.definition.upperStrike,
-      t.definition.wingWidth, t.definition.quantity,
+      d.expiration, d.direction, d.optionType,
+      d.lowerStrike, d.centerStrike, d.upperStrike,
+      d.wingWidth, d.quantity,
       t.entryIndicators?.gaugeLevel ?? '',
       t.entryDebit, new Date(t.exitTimestamp).toISOString(), t.exitValue,
       t.exitReason, t.ambiguous,
@@ -56,16 +93,51 @@ export function tradesToCsv(runId: string, trades: readonly TradeResult[]): stri
       t.mfeCaptureRatio ?? '', t.profitGiveback,
       t.minNormalizedDistance ?? '', t.quality.coverage, t.quality.freshness,
       t.quality.invalidPriceMinutes ?? '',
-      t.entryAudit?.lower.price ?? '', t.entryAudit?.center.price ?? '', t.entryAudit?.upper.price ?? '',
-      t.entryAudit ? new Date(t.entryAudit.lower.observedAt).toISOString() : '',
-      t.entryAudit ? new Date(t.entryAudit.center.observedAt).toISOString() : '',
-      t.entryAudit ? new Date(t.entryAudit.upper.observedAt).toISOString() : '',
-      t.entryAudit?.maxLegAgeMs ?? '',
-      t.exitAudit?.lower.price ?? '', t.exitAudit?.center.price ?? '', t.exitAudit?.upper.price ?? '',
-      t.exitAudit ? new Date(t.exitAudit.lower.observedAt).toISOString() : '',
-      t.exitAudit ? new Date(t.exitAudit.center.observedAt).toISOString() : '',
-      t.exitAudit ? new Date(t.exitAudit.upper.observedAt).toISOString() : '',
-      t.exitAudit?.maxLegAgeMs ?? ''
+      entry?.lower.price ?? '', entry?.center.price ?? '', entry?.upper.price ?? '',
+      entry ? new Date(entry.lower.observedAt).toISOString() : '',
+      entry ? new Date(entry.center.observedAt).toISOString() : '',
+      entry ? new Date(entry.upper.observedAt).toISOString() : '',
+      entry?.maxLegAgeMs ?? '',
+      exit?.lower.price ?? '', exit?.center.price ?? '', exit?.upper.price ?? '',
+      exit ? new Date(exit.lower.observedAt).toISOString() : '',
+      exit ? new Date(exit.center.observedAt).toISOString() : '',
+      exit ? new Date(exit.upper.observedAt).toISOString() : '',
+      exit?.maxLegAgeMs ?? ''
+    ])
+  }
+  return toCsv(rows)
+}
+
+function calendarTradesToCsv(runId: string, trades: readonly TradeResult[]): string {
+  const rows: unknown[][] = [CALENDAR_TRADE_HEADER]
+  const legCells = (audit: CalendarPriceAudit | undefined): unknown[] =>
+    CALENDAR_LEG_ROLES.flatMap((role): unknown[] =>
+      audit ? [audit.legs[role].bid, audit.legs[role].ask] : ['', '']
+    )
+
+  for (const t of trades) {
+    const d = t.definition as DoubleCalendarDefinition
+    const entry = t.entryAudit as CalendarPriceAudit | undefined
+    const exit = t.exitAudit as CalendarPriceAudit | undefined
+    const context = t.calendarContext
+    rows.push([
+      runId, t.strategyId, t.strategyLabel,
+      new Date(t.entryTimestamp).toISOString(), t.entryUnderlying ?? '',
+      d.frontExpiration, d.backExpiration, d.putStrike, d.callStrike,
+      d.callStrike - d.putStrike, d.quantity,
+      context?.putDelta ?? '', context?.callDelta ?? '',
+      context?.putIv ?? '', context?.callIv ?? '',
+      context?.putBackIv ?? '', context?.callBackIv ?? '',
+      context?.forward ?? '', context?.frontDte ?? '', context?.backDte ?? '',
+      t.entryDebit, t.entryMid ?? '',
+      new Date(t.exitTimestamp).toISOString(), t.exitValue, t.exitReason,
+      t.pnlDollars, t.pnlPct, t.holdingMinutes, t.sessionsHeld ?? '', t.exitDte,
+      t.excursions.mfe?.pct ?? '', t.excursions.mae?.pct ?? '',
+      t.mfeCaptureRatio ?? '', t.profitGiveback, t.maxBreachPoints ?? '',
+      t.quality.coverage, t.quality.freshness, t.quality.invalidPriceMinutes ?? '',
+      entry?.spread ?? '', exit?.spread ?? '',
+      ...legCells(entry),
+      ...legCells(exit)
     ])
   }
   return toCsv(rows)

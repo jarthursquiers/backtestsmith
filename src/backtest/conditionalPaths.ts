@@ -1,4 +1,5 @@
 import type { TradeResult } from '../shared/trade.js'
+import { isCalendarTrade } from '../shared/trade.js'
 import type {
   AnalyticsReport,
   ConditionalReport,
@@ -233,6 +234,9 @@ export function buildAnalyticsReport(
   strategyId: string
 ): AnalyticsReport {
   const cohort = trades.filter((t) => t.strategyId === strategyId)
+  const thresholds = cohort.some(isCalendarTrade)
+    ? [5, 10, 15, 20, 25, 30, 40, 50, 75, 100]
+    : [25, 50, 100, 150, 200, 300]
 
   return {
     strategyId,
@@ -244,7 +248,7 @@ export function buildAnalyticsReport(
       { binCount: 20 }
     ),
     dteAtMfe: histogram(cohort.map((t) => t.excursions.mfe?.dte ?? 0), { binCount: 10 }),
-    conditional: analyzeConditionalPaths(cohort),
+    conditional: analyzeConditionalPaths(cohort, thresholds),
     tent: analyzeTentApproach(cohort),
     byWeekday: medianBy(cohort, (t) => easternParts(t.entryTimestamp).weekday, (t) => t.pnlPct),
     byMonth: medianBy(cohort, (t) => easternParts(t.entryTimestamp).month, (t) => t.pnlPct),

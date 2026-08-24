@@ -6,7 +6,8 @@ import {
   STRATEGY_CATALOG,
   requireStrategy
 } from '../shared/strategyCatalog.js'
-import { MANAGEMENT_CATALOG } from '../shared/managementCatalog.js'
+import { MANAGEMENT_CATALOG, managementCatalogFor } from '../shared/managementCatalog.js'
+import { buildCalendarManagementSet } from './calendarExits.js'
 import { buildManagementSet, managementCatalogDrift, MANAGEMENT_IDS } from './managementSets.js'
 
 const BASE = {
@@ -76,8 +77,23 @@ describe('strategy catalogue', () => {
 
   it('only defaults to management methods the engine can build', () => {
     for (const strategy of STRATEGY_CATALOG) {
-      expect(() => buildManagementSet(strategy.defaultManagements)).not.toThrow()
+      // Each structure has its own builder, and its own vocabulary of ids: a
+      // calendar knows `breach` and `day5`, a butterfly knows `centerTouch`
+      // and `tent0.5`. Resolving one against the other is the drift this
+      // guards, so it must dispatch the same way the application does.
+      const build =
+        strategy.structure === 'doubleCalendar' ? buildCalendarManagementSet : buildManagementSet
+      expect(() => build(strategy.defaultManagements)).not.toThrow()
       expect(strategy.defaultManagements.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('offers only management methods its own catalogue lists', () => {
+    for (const strategy of STRATEGY_CATALOG) {
+      const listed = new Set(managementCatalogFor(strategy.structure).map((method) => method.id))
+      for (const id of strategy.defaultManagements) {
+        expect(listed.has(id), `${strategy.id} defaults to unlisted method ${id}`).toBe(true)
+      }
     }
   })
 
@@ -85,10 +101,28 @@ describe('strategy catalogue', () => {
     for (const strategy of STRATEGY_CATALOG) {
       const config = configFor(strategy.id)
       expect(config.strategyId).toBe(strategy.id)
-      expect(config.wingWidth).toBeGreaterThan(0)
       expect(config.underlying).toBe('SPX')
       expect(config.from).toBe(BASE.from)
       expect(/^\d{2}:\d{2}$/.test(config.entryTime)).toBe(true)
+
+      if (strategy.structure === 'doubleCalendar') {
+        // A calendar is placed by delta and has no wings at all; the butterfly
+        // fields are inert and must stay that way rather than carrying a number
+        // that looks meaningful.
+        expect(config.structure).toBe('doubleCalendar')
+        expect(config.wingWidth).toBe(0)
+        const calendar = config.calendar!
+        expect(calendar.targetDelta).toBeGreaterThan(0)
+        expect(calendar.targetDelta).toBeLessThan(1)
+        expect(calendar.backTargetDte).toBeGreaterThan(calendar.frontTargetDte)
+        expect(calendar.spreadFraction).toBeGreaterThanOrEqual(0)
+        expect(calendar.spreadFraction).toBeLessThanOrEqual(1)
+        expect(/^\d{2}:\d{2}$/.test(calendar.horizonTime)).toBe(true)
+      } else {
+        expect(config.structure ?? 'butterfly').toBe('butterfly')
+        expect(config.wingWidth).toBeGreaterThan(0)
+        expect(config.calendar).toBeUndefined()
+      }
     }
   })
 
@@ -101,6 +135,12 @@ describe('strategy catalogue', () => {
     // would imply the run used a value it never consulted.
     expect(config.strategyParams).not.toHaveProperty('emBuffer')
     expect(config.strategyParams).not.toHaveProperty('wingsAway')
+  })
+
+  it('describes a double calendar using its actual delta, expirations, and schedule', () => {
+    expect(describeConfig(configFor('double-calendar'))).toBe(
+      '30Δ double calendar | 14/21 DTE | Monday at 10:00 ET'
+    )
   })
 })
 

@@ -1,7 +1,7 @@
 import type { OptionBar, UnderlyingBar } from '../domain/bars.js'
 import type { OptionContract, OptionType } from '../domain/contracts.js'
 import type { ButterflyDefinition, ButterflySeries, MissingDataPolicy, PricingAssumptions } from '../domain/butterfly.js'
-import type { TradeResult } from '../shared/trade.js'
+import type { ButterflyTradeResult } from '../shared/trade.js'
 import {
   describeBands,
   isZeroDteStudy,
@@ -263,7 +263,7 @@ export async function preflightStudy(
 }
 
 export interface StudyOutcome {
-  trades: TradeResult[]
+  trades: ButterflyTradeResult[]
   /** One reconstructed series per accepted entry, keyed by entry timestamp. */
   series: ButterflySeries[]
   skipped: SkippedEntry[]
@@ -361,7 +361,7 @@ export async function runStudy(
     ? await source.getDailyBars(gaugeTicker, warmupStart, config.to)
     : []
 
-  const trades: TradeResult[] = []
+  const trades: ButterflyTradeResult[] = []
   const series: ButterflySeries[] = []
   const skipped: SkippedEntry[] = []
   const skipReasons: Record<string, number> = {}

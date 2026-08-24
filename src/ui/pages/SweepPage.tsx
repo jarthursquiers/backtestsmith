@@ -48,7 +48,11 @@ const AXES: {
   { name: 'offsetPoints', label: 'Offset points OTM', kind: 'entry', placeholder: '50, 100, 150' },
   { name: 'expectedMoveBuffer', label: 'Expected move buffer', kind: 'entry', placeholder: '0, 10, 25' },
   { name: 'slippage', label: 'Slippage', kind: 'entry', placeholder: '0, 0.05, 0.1' },
-  { name: 'maxStaleMinutes', label: 'Max stale minutes', kind: 'entry', placeholder: '1, 5, 15' }
+  { name: 'maxStaleMinutes', label: 'Max stale minutes', kind: 'entry', placeholder: '1, 5, 15' },
+  { name: 'targetDelta', label: 'Short strike delta', kind: 'entry', placeholder: '20, 25, 30, 35' },
+  { name: 'frontDte', label: 'Short expiration DTE', kind: 'entry', placeholder: '7, 10, 14' },
+  { name: 'backDte', label: 'Long expiration DTE', kind: 'entry', placeholder: '14, 21, 28' },
+  { name: 'spreadFraction', label: 'Package spread paid', kind: 'entry', placeholder: '0, 0.25, 0.5, 1' }
 ]
 
 type RangeAxisName = 'targetDte' | 'wingWidth'

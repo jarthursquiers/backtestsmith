@@ -4,6 +4,12 @@ import type { CacheStats } from '../shared/cache.js'
 import { marketDateOf, type MarketDate } from '../core/time/marketTime.js'
 import { createLogger } from '../services/logger.js'
 import type { AppendType, Database } from './duckdb.js'
+import type { ChainQuote } from '../backtest/calendarStrikes.js'
+import {
+  queryArchivedExpirations,
+  queryChainSnapshot,
+  queryOptionBarsForTickers
+} from '../data/calendarArchiveQueries.js'
 
 const log = createLogger('database.store')
 
@@ -335,6 +341,42 @@ export class MarketDataStore {
     )
     return rows.map((r) => rowToOptionBar(r))
   }
+
+  /**
+   * Expirations of one root with cached minute bars on a session.
+   *
+   * Cache-only, like the two reads below it: a double calendar study needs a
+   * whole chain at the entry minute and four contracts across every session of
+   * their lives, which over a rate-limited API is days of requests. A gap here
+   * is reported as a gap rather than fetched.
+   */
+  listArchivedExpirations(root: string, onDate: MarketDate): Promise<MarketDate[]> {
+    return queryArchivedExpirations(this.query, root, onDate)
+  }
+
+  /** Every two-sided quote for one expiration at one minute. */
+  chainSnapshot(
+    root: string,
+    expiration: MarketDate,
+    onDate: MarketDate,
+    minute: number,
+    carryMinutes = 5
+  ): Promise<ChainQuote[]> {
+    return queryChainSnapshot(this.query, root, expiration, onDate, minute, carryMinutes * 60_000)
+  }
+
+  /** Minute bars for several contracts at once, keyed by ticker. */
+  getOptionBarsForTickers(
+    tickers: readonly string[],
+    from: MarketDate,
+    to: MarketDate
+  ): Promise<Record<string, OptionBar[]>> {
+    return queryOptionBarsForTickers(this.query, tickers, from, to)
+  }
+
+  /** Passes the database through to the shared calendar query builders. */
+  private readonly query = <T>(sql: string, params: unknown[]): Promise<T[]> =>
+    this.db.query<T>(sql, params) as Promise<T[]>
 
   async getUnderlyingBars(
     ticker: string,
