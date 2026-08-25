@@ -194,7 +194,25 @@ function buildStudySource(services: AppServices, signal?: AbortSignal, cacheOnly
         : (await services.provider.getOptionBars(
             { ticker, from, to, timespan: 'minute' },
             { ...(signal ? { signal } : {}), priority: 20 }
-          )).bars
+          )).bars,
+    getOptionArchiveDateRange: (root) => services.store.optionArchiveDateRange(root),
+    listArchivedExpirations: (root, onDate) => services.store.listArchivedExpirations(root, onDate),
+    getArchivedChain: async (root, underlying, expiration, type, onDate, minute, carryMinutes) =>
+      (await services.store.chainSnapshot(root, expiration, onDate, minute, carryMinutes))
+        .filter((quote) => quote.right === type)
+        .map((quote) => ({
+          ticker: quote.ticker,
+          underlying,
+          expirationDate: expiration,
+          strike: quote.strike,
+          type: quote.right,
+          root
+        })),
+    // Once a historical chain came from the archive, its lifecycle must stay
+    // cache-only. Provider fallback would mix data vintages and can silently
+    // turn an incomplete archive tail into a different entry population.
+    getArchivedOptionBars: (ticker, from, to) =>
+      services.store.getOptionBars(ticker, tradingDaysBetween(from, to), minuteShape)
   }
 }
 

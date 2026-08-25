@@ -80,6 +80,7 @@ export type StrategySlice = Pick<
   | 'placement'
   | 'wingWidth'
 > & {
+  entryWeekdays?: number[]
   expirationWeekdays?: number[]
   wingWidthRule?: WingWidthConfig
   /**
@@ -120,6 +121,8 @@ export interface StrategyDefinition {
   defaultManagements: string[]
   /** Sweep axes worth varying for this strategy, in a sensible order. */
   sweepAxes: string[]
+  /** Optional starting text for Parameter Sweep axis inputs. */
+  sweepDefaults?: Record<string, string>
   /** Data this strategy cannot run without, surfaced before a run starts. */
   requiresIntradayIndex: boolean
   build(params: Record<string, StrategyParamValue>): StrategySlice
@@ -410,6 +413,100 @@ const EMA_SWING: StrategyDefinition = {
     placement: buildPlacement(params),
     ...buildWidth(params)
   })
+}
+
+/**
+ * The requested long-duration weekly EMA butterfly study.
+ *
+ * Unlike the daily seven-DTE swing preset, this opens only once per week and
+ * places the centre a small fixed distance from the live index level. The
+ * direction mapping itself is the standard look-ahead-safe EMA rule shared by
+ * the rest of the engine: calls above last night's EMA, puts below it.
+ */
+const WEEKLY_45_DTE_EMA: StrategyDefinition = {
+  id: 'weekly-45dte-ema-butterfly',
+  label: 'Weekly 45 DTE EMA butterfly',
+  summary: 'Once weekly, place a 50-wide butterfly just above or below ATM according to the daily 9 EMA.',
+  rules: [
+    'Open one position per week on the configured weekday; if that session is a holiday, use the nearest open session in the same week.',
+    'At entry, compare live SPX with the daily 9 EMA computed only from sessions that have already closed.',
+    'Above the EMA buys an upside call butterfly; below it buys a downside put butterfly.',
+    'Place the centre the configured number of SPX points above or below the live index level, in the direction of the signal.',
+    'Use the listed SPXW expiration nearest 45 calendar DTE within the configured tolerance and symmetrical 50-point wings by default.',
+    'Compare holding through expiration with profit at +200%, +300%, or +500% of the entry debit. A structurally unreachable target behaves as hold-to-expiration.'
+  ],
+  horizon: 'multiDay',
+  requiresIntradayIndex: false,
+  params: [
+    {
+      key: 'entryWeekday',
+      label: 'Open on',
+      kind: 'choice',
+      default: '1',
+      options: [
+        { value: '1', label: 'Monday' },
+        { value: '2', label: 'Tuesday' },
+        { value: '3', label: 'Wednesday' },
+        { value: '4', label: 'Thursday' },
+        { value: '5', label: 'Friday' }
+      ]
+    },
+    { key: 'entryTime', label: 'Entry time (ET)', kind: 'time', default: '09:35' },
+    {
+      key: 'entryWindowMinutes',
+      label: 'Entry window',
+      kind: 'number',
+      default: 15,
+      min: 0,
+      hint: 'Minutes a fill may trail the entry time when prints are sparse'
+    },
+    { key: 'emaPeriod', label: 'Daily EMA period', kind: 'number', default: 9, min: 2 },
+    { key: 'targetDte', label: 'Target DTE', kind: 'number', default: 45, min: 1 },
+    {
+      key: 'maxDeviation',
+      label: 'DTE tolerance',
+      kind: 'number',
+      default: 3,
+      min: 0,
+      hint: 'Calendar days either side of 45 DTE allowed when selecting the expiration'
+    },
+    {
+      key: 'offsetPoints',
+      label: 'Centre offset from ATM',
+      kind: 'number',
+      default: 25,
+      min: 0,
+      step: 5,
+      hint: 'Calls are centred this far above live SPX; puts this far below it'
+    },
+    {
+      key: 'wingWidth',
+      label: 'Wing width',
+      kind: 'number',
+      default: 50,
+      min: 5,
+      step: 5,
+      hint: 'SPX points from the centre to either wing; sweep nearby widths to test robustness'
+    }
+  ],
+  defaultManagements: ['hold', 'tp200', 'tp300', 'tp500'],
+  sweepAxes: ['profitTarget', 'targetDte', 'wingWidth', 'offsetPoints', 'emaPeriod'],
+  sweepDefaults: { profitTarget: '200, 300, 500' },
+  build: (params) => {
+    const weekday = num(params, 'entryWeekday', 1)
+    return {
+      entryTime: str(params, 'entryTime', '09:35'),
+      entryWindowMinutes: num(params, 'entryWindowMinutes', 15),
+      entryWeekdays: [Math.min(5, Math.max(1, Math.round(weekday)))],
+      entry: { type: 'ema', period: num(params, 'emaPeriod', 9) },
+      targetDte: num(params, 'targetDte', 45),
+      expirationRule: 'nearest',
+      maxDeviation: num(params, 'maxDeviation', 3),
+      expirationWeekdays: [1, 2, 3, 4, 5],
+      placement: { type: 'fixedDistance', offsetPoints: num(params, 'offsetPoints', 25) },
+      wingWidth: num(params, 'wingWidth', 50)
+    }
+  }
 }
 
 const EMA_SWING_VIX_WIDTH: StrategyDefinition = {
@@ -853,6 +950,7 @@ const DOUBLE_CALENDAR: StrategyDefinition = {
 
 export const STRATEGY_CATALOG: readonly StrategyDefinition[] = [
   EMA_SWING_VIX_WIDTH,
+  WEEKLY_45_DTE_EMA,
   EMA_ZERO_DTE,
   ORB_ZERO_DTE,
   EMA_SWING,
@@ -967,7 +1065,10 @@ export function describeConfig(config: StudyConfig): string {
     )
   }
   const dte = config.targetDte === 0 ? '0DTE' : `${config.targetDte} DTE`
-  return `${describeEntry(config)} | ${dte} | ${describeWingWidth(config)} | ${describePlacement(config.placement)}`
+  const schedule = config.entryWeekdays && config.entryWeekdays.length > 0
+    ? ` | weekly ${config.entryWeekdays.map((day) => ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][day] ?? `day ${day}`).join('/')}`
+    : ''
+  return `${describeEntry(config)} | ${dte} | ${describeWingWidth(config)} | ${describePlacement(config.placement)}${schedule}`
 }
 
 export function describePlacement(placement: PlacementConfig): string {

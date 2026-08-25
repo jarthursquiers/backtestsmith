@@ -54,7 +54,7 @@ function reached(trade: TradeResult, threshold: number): boolean {
  */
 export function analyzeConditionalPaths(
   trades: readonly TradeResult[],
-  thresholds: readonly number[] = [25, 50, 100, 150, 200, 300]
+  thresholds: readonly number[] = [25, 50, 100, 150, 200, 300, 500]
 ): ConditionalReport {
   const rows: ConditionalRow[] = []
 
@@ -236,7 +236,7 @@ export function buildAnalyticsReport(
   const cohort = trades.filter((t) => t.strategyId === strategyId)
   const thresholds = cohort.some(isCalendarTrade)
     ? [5, 10, 15, 20, 25, 30, 40, 50, 75, 100]
-    : [25, 50, 100, 150, 200, 300]
+    : [25, 50, 100, 150, 200, 300, 500]
 
   return {
     strategyId,

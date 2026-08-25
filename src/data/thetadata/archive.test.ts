@@ -26,6 +26,13 @@ describe('option archive planning', () => {
     // June 19 is a market holiday.
     expect(archiveQuoteDates(request, '2025-06-20')).toEqual(['2025-06-18', '2025-06-20'])
   })
+
+  it('follows a selected expiration past the final entry date', () => {
+    const lifecycle = { ...request, maxDte: 7 }
+    expect(archiveQuoteDates(lifecycle, '2025-06-25')).toEqual([
+      '2025-06-18', '2025-06-20', '2025-06-23', '2025-06-24', '2025-06-25'
+    ])
+  })
 })
 
 describe('runOptionArchive', () => {

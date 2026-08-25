@@ -11,6 +11,7 @@ import {
   sessionClose,
   sessionMinuteCount,
   sessionOpen,
+  scheduledEntryDays,
   tradingDaysBetween
 } from './marketTime.js'
 
@@ -123,6 +124,17 @@ describe('trading day navigation', () => {
       '2025-11-26',
       '2025-11-28'
     ])
+  })
+
+  it('selects one weekly entry and shifts to the nearest session on a holiday', () => {
+    expect(scheduledEntryDays('2025-02-10', '2025-02-21', [1])).toEqual([
+      '2025-02-10',
+      '2025-02-18' // Presidents Day closed Monday 02-17
+    ])
+    expect(scheduledEntryDays('2025-11-24', '2025-11-28', [5])).toEqual(['2025-11-28'])
+    expect(scheduledEntryDays('2025-11-24', '2025-11-28')).toEqual(
+      tradingDaysBetween('2025-11-24', '2025-11-28')
+    )
   })
 
   it('bounds the regular session', () => {

@@ -61,6 +61,43 @@ function completeButterfly(
   return { centerStrike: center, lowerStrike: lower, upperStrike: upper, wingWidth, reason }
 }
 
+/** Nearest centre to a target for which both exact-width wings also exist. */
+function nearestCompleteButterfly(
+  target: number,
+  wingWidth: number,
+  available: readonly number[],
+  reason: (center: number) => string
+): PlacementResult | null {
+  const listed = new Set(available)
+  const centers = [...listed]
+    .filter((center) => listed.has(center - wingWidth) && listed.has(center + wingWidth))
+    .sort((a, b) => Math.abs(a - target) - Math.abs(b - target) || a - b)
+  const center = centers[0]
+  return center === undefined
+    ? null
+    : completeButterfly(center, wingWidth, available, reason(center))
+}
+
+/** Nearest complete structure whose near wing is at or beyond a target. */
+function nearestCompleteButterflyOutside(
+  nearWingTarget: number,
+  direction: 1 | -1,
+  wingWidth: number,
+  available: readonly number[],
+  reason: (nearWing: number) => string
+): PlacementResult | null {
+  const listed = new Set(available)
+  const candidates = [...listed]
+    .filter((center) => listed.has(center - wingWidth) && listed.has(center + wingWidth))
+    .map((center) => ({ center, nearWing: center - direction * wingWidth }))
+    .filter(({ nearWing }) => direction < 0 ? nearWing <= nearWingTarget : nearWing >= nearWingTarget)
+    .sort((a, b) => Math.abs(a.nearWing - nearWingTarget) - Math.abs(b.nearWing - nearWingTarget))
+  const chosen = candidates[0]
+  return chosen === undefined
+    ? null
+    : completeButterfly(chosen.center, wingWidth, available, reason(chosen.nearWing))
+}
+
 /**
  * Places the centre a fixed number of points away from the underlying, in the
  * direction of the trade.
@@ -75,14 +112,12 @@ export function fixedDistancePlacement(offsetPoints: number): ButterflyPlacement
     place({ signal, availableStrikes, wingWidth }) {
       const direction = signal.direction === 'bearish' ? -1 : 1
       const target = signal.underlyingAtEntry + direction * offsetPoints
-      const center = nearestStrike(target, availableStrikes)
-      if (center === null) return null
-
-      return completeButterfly(
-        center,
+      return nearestCompleteButterfly(
+        target,
         wingWidth,
         availableStrikes,
-        `Centre ${center} is ${offsetPoints} points ${signal.direction === 'bearish' ? 'below' : 'above'} SPX ${signal.underlyingAtEntry.toFixed(2)}`
+        (center) => `Centre ${center} is nearest the ${offsetPoints}-point ` +
+          `${signal.direction === 'bearish' ? 'downside' : 'upside'} target from SPX ${signal.underlyingAtEntry.toFixed(2)}`
       )
     }
   }
@@ -102,14 +137,12 @@ export function normalizedDistancePlacement(wingsAway: number): ButterflyPlaceme
     place({ signal, availableStrikes, wingWidth }) {
       const direction = signal.direction === 'bearish' ? -1 : 1
       const target = signal.underlyingAtEntry + direction * wingsAway * wingWidth
-      const center = nearestStrike(target, availableStrikes)
-      if (center === null) return null
-
-      return completeButterfly(
-        center,
+      return nearestCompleteButterfly(
+        target,
         wingWidth,
         availableStrikes,
-        `Centre ${center} is ${wingsAway} wing widths (${(wingsAway * wingWidth).toFixed(0)} points) ${signal.direction === 'bearish' ? 'below' : 'above'} SPX ${signal.underlyingAtEntry.toFixed(2)}`
+        (center) => `Centre ${center} is nearest the ${wingsAway}-wing ` +
+          `${signal.direction === 'bearish' ? 'downside' : 'upside'} target from SPX ${signal.underlyingAtEntry.toFixed(2)}`
       )
     }
   }
@@ -170,28 +203,22 @@ export function expectedMovePlacement(options: {
       const nearWingTarget = signal.underlyingAtEntry + direction * (expectedMove + buffer)
 
       if (anchor === 'nearWingOutside') {
-        const nearWing = strikeAtOrBeyond(nearWingTarget, availableStrikes, direction)
-        if (nearWing === null) return null
-        const center = nearWing + direction * wingWidth
-
-        return completeButterfly(
-          center,
+        return nearestCompleteButterflyOutside(
+          nearWingTarget,
+          direction,
           wingWidth,
           availableStrikes,
-          `Near wing ${nearWing} is the first listed strike ${signal.direction === 'bearish' ? 'at or below' : 'at or above'} ` +
+          (nearWing) => `Near wing ${nearWing} is the nearest complete structure ${signal.direction === 'bearish' ? 'at or below' : 'at or above'} ` +
             `the ${expectedMove.toFixed(1)}-point expected move${buffer ? ` plus ${buffer}` : ''} from SPX ${signal.underlyingAtEntry.toFixed(2)}`
         )
       }
 
       const centerTarget = nearWingTarget + direction * wingWidth
-      const center = nearestStrike(centerTarget, availableStrikes)
-      if (center === null) return null
-
-      return completeButterfly(
-        center,
+      return nearestCompleteButterfly(
+        centerTarget,
         wingWidth,
         availableStrikes,
-        `Near wing ${center - direction * wingWidth} sits outside the ${expectedMove.toFixed(1)}-point expected move${buffer ? ` plus ${buffer}` : ''}`
+        (center) => `Near wing ${center - direction * wingWidth} sits outside the ${expectedMove.toFixed(1)}-point expected move${buffer ? ` plus ${buffer}` : ''}`
       )
     }
   }

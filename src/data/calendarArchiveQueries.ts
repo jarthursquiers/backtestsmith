@@ -21,6 +21,11 @@ import type { ChainQuote } from '../backtest/calendarStrikes.js'
 
 export type QueryFn = <T>(sql: string, params: unknown[]) => Promise<T[]>
 
+export interface OptionArchiveDateRange {
+  from: MarketDate
+  to: MarketDate
+}
+
 const MINUTE_SHAPE = "timespan = 'minute' AND multiplier = 1"
 
 /**
@@ -61,8 +66,9 @@ export async function queryArchivedExpirations(
 ): Promise<MarketDate[]> {
   const rows = await query<{ compact: string }>(
     `SELECT DISTINCT regexp_extract(ticker, 'O:[A-Z]+([0-9]{6})', 1) AS compact
-       FROM option_bars
-      WHERE ${MINUTE_SHAPE}
+       FROM bar_coverage
+      WHERE ${MINUTE_SHAPE} AND kind = 'option' AND provider = 'thetadata-nbbo'
+        AND bar_count > 0
         AND market_date = ?
         AND ticker >= ? AND ticker < ?
       ORDER BY compact`,
@@ -71,6 +77,34 @@ export async function queryArchivedExpirations(
   return rows
     .filter((row) => /^\d{6}$/.test(row.compact))
     .map((row) => `20${row.compact.slice(0, 2)}-${row.compact.slice(2, 4)}-${row.compact.slice(4, 6)}`)
+}
+
+/**
+ * Sessions containing actual quotes in a root's local minute archive.
+ *
+ * The coverage ledger is intentional here rather than `option_bars`, but the
+ * boundary requires at least one quoted contract. Archive attempts can include
+ * future sessions and record them as checked-but-empty; treating those as
+ * mature would allow incomplete positions through. Individual zero-quote
+ * contracts remain represented inside a session established by the rest of the
+ * chain.
+ */
+export async function queryOptionArchiveDateRange(
+  query: QueryFn,
+  root: string
+): Promise<OptionArchiveDateRange | null> {
+  const rows = await query<{ first_date: string | null; last_date: string | null }>(
+    `SELECT min(market_date) AS first_date, max(market_date) AS last_date
+       FROM bar_coverage
+      WHERE timespan = 'minute' AND multiplier = 1 AND kind = 'option'
+        AND provider = 'thetadata-nbbo'
+        AND bar_count > 0
+        AND ticker >= ? AND ticker < ?`,
+    [`O:${root}0`, `O:${root}~`]
+  )
+  const first = rows[0]?.first_date
+  const last = rows[0]?.last_date
+  return first && last ? { from: first, to: last } : null
 }
 
 /**

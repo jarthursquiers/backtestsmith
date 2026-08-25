@@ -136,7 +136,9 @@ export function SweepPage() {
   const [from, setFrom] = useState(shiftDate(todayEastern(), -60))
   const [to, setTo] = useState(shiftDate(todayEastern(), -7))
   const [objective, setObjective] = useState('totalPnl')
-  const [inputs, setInputs] = useState<Record<string, string>>({ profitTarget: '25, 50, 100, 150, 200' })
+  const [inputs, setInputs] = useState<Record<string, string>>(() => (
+    requireStrategy(DEFAULT_STRATEGY_ID).sweepDefaults ?? { profitTarget: '25, 50, 100, 150, 200' }
+  ))
   const [rangeInputs, setRangeInputs] = useState<Record<RangeAxisName, RangeInput>>(() => ({
     targetDte: { enabled: false, ...RANGE_AXES[0]!.defaults },
     wingWidth: { enabled: false, ...RANGE_AXES[1]!.defaults }
@@ -189,6 +191,7 @@ export function SweepPage() {
     const next = requireStrategy(id)
     setStrategyId(id)
     setParams(defaultStrategyParams(next))
+    setInputs(next.sweepDefaults ?? { profitTarget: '25, 50, 100, 150, 200' })
     setResults([])
   }
 

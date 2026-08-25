@@ -295,10 +295,18 @@ The shipped set:
 | Strategy | Entry | Expiration |
 | --- | --- | --- |
 | EMA swing butterfly, VIX-scaled width | Price against a daily EMA, with the wing width set by VIX | Target DTE, default 7 |
+| Weekly 45 DTE EMA butterfly | Once weekly; calls just above ATM when SPX is above its daily 9 EMA, puts just below when it is below | Nearest listed expiration to 45 DTE |
 | EMA direction 0DTE butterfly | Price against a daily EMA at a fixed morning time | Same session |
 | Opening range breakout 0DTE butterfly | First candle to close outside the session's opening range | Same session |
 | EMA direction swing butterfly | Price against a daily EMA at a fixed time | Target DTE, default 7 |
 | Fixed-time 0DTE butterfly | A set time, always one side. A control for the signal-driven studies | Same session |
+
+The weekly 45 DTE preset defaults to Monday entries (shifting to the nearest
+open session on holiday weeks), a centre 25 SPX points from the live index, and
+50-point symmetrical wings. Its default comparison is hold-to-expiration versus
+profits of +200%, +300%, and +500% of the entry debit. Centre offset and wing
+width remain sweepable so the result can be tested for robustness around those
+starting values.
 
 The two 0DTE strategies place identical structures and differ only in how they
 choose the side and the minute, which is what makes them directly comparable:

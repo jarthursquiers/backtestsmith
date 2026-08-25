@@ -173,3 +173,46 @@ export function tradingDaysBetween(from: MarketDate, to: MarketDate): MarketDate
   }
   return days
 }
+
+/**
+ * Trading sessions selected by a once-per-week entry schedule.
+ *
+ * An empty weekday set means every session. Otherwise one session is chosen in
+ * each ISO week: the requested weekday when it is open, or the nearest open
+ * session when a holiday closes it.
+ */
+export function scheduledEntryDays(
+  from: MarketDate,
+  to: MarketDate,
+  weekdays?: readonly number[]
+): MarketDate[] {
+  const all = tradingDaysBetween(from, to)
+  if (!weekdays || weekdays.length === 0) return all
+
+  const wanted = [...new Set(weekdays)]
+  if (wanted.some((weekday) => !Number.isInteger(weekday) || weekday < 1 || weekday > 5)) {
+    throw new Error('Entry weekdays must be integers from 1 (Monday) through 5 (Friday).')
+  }
+
+  const byWeek = new Map<string, MarketDate[]>()
+  for (const date of all) {
+    const value = DateTime.fromISO(date, { zone: MARKET_ZONE })
+    const key = `${value.weekYear}-${String(value.weekNumber).padStart(2, '0')}`
+    const bucket = byWeek.get(key)
+    if (bucket) bucket.push(date)
+    else byWeek.set(key, [date])
+  }
+
+  return [...byWeek.values()].map((dates) => {
+    const exact = dates.find((date) => wanted.includes(DateTime.fromISO(date, { zone: MARKET_ZONE }).weekday))
+    if (exact) return exact
+
+    return dates.reduce((best, date) => {
+      const day = DateTime.fromISO(date, { zone: MARKET_ZONE }).weekday
+      const bestDay = DateTime.fromISO(best, { zone: MARKET_ZONE }).weekday
+      const distance = Math.min(...wanted.map((target) => Math.abs(day - target)))
+      const bestDistance = Math.min(...wanted.map((target) => Math.abs(bestDay - target)))
+      return distance < bestDistance ? date : best
+    })
+  })
+}

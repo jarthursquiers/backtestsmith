@@ -127,6 +127,26 @@ describe('MarketDataStore persistence', () => {
     await db.close()
   })
 
+  it('derives the authoritative date range from actual ThetaData quotes, not empty attempts', async () => {
+    const db = new Database(':memory:')
+    await db.open()
+    const store = new MarketDataStore(db)
+    const contracts: OptionContract[] = [
+      { ticker: TICKER, underlying: 'SPX', expirationDate: '2025-06-20', strike: 5875, type: 'put', root: 'SPXW' }
+    ]
+
+    await store.putOptionArchiveDay(contracts, '2025-06-17', [bar('2025-06-17', 9, 35, 2.2)], 'thetadata-nbbo')
+    await store.putOptionArchiveDay(contracts, '2025-06-18', [], 'thetadata-nbbo')
+    // A different cache/provider must not stretch the archive boundary.
+    await store.putBars('option', TICKER, ['2025-06-20'], [bar('2025-06-20', 9, 35, 2.4)], SHAPE, 'massive')
+
+    expect(await store.optionArchiveDateRange('SPXW')).toEqual({ from: '2025-06-17', to: '2025-06-17' })
+    expect(await store.listArchivedExpirations('SPXW', '2025-06-17')).toEqual(['2025-06-20'])
+    expect(await store.listArchivedExpirations('SPXW', '2025-06-18')).toEqual([])
+
+    await db.close()
+  })
+
   it('files bars under the Eastern market date, not the UTC date', async () => {
     const db = new Database(':memory:')
     await db.open()

@@ -15,7 +15,7 @@ import type { ExitReason, ExitStrategy, PositionState } from './exits.js'
  */
 
 /** Return thresholds whose first-touch time is recorded for every trade. */
-export const EXCURSION_THRESHOLDS = [25, 50, 75, 100, 150, 200, 300] as const
+export const EXCURSION_THRESHOLDS = [25, 50, 75, 100, 150, 200, 300, 500] as const
 
 export interface SimulateOptions {
   /** Deducted from the exit value, in price points, mirroring entry slippage. */

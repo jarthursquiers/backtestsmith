@@ -8,8 +8,10 @@ import type { ChainQuote } from '../backtest/calendarStrikes.js'
 import {
   queryArchivedExpirations,
   queryChainSnapshot,
+  queryOptionArchiveDateRange,
   queryOptionBarsForTickers
 } from '../data/calendarArchiveQueries.js'
+import type { OptionArchiveDateRange } from '../data/calendarArchiveQueries.js'
 
 const log = createLogger('database.store')
 
@@ -352,6 +354,11 @@ export class MarketDataStore {
    */
   listArchivedExpirations(root: string, onDate: MarketDate): Promise<MarketDate[]> {
     return queryArchivedExpirations(this.query, root, onDate)
+  }
+
+  /** First and last sessions covered by a root's local minute archive. */
+  optionArchiveDateRange(root: string): Promise<OptionArchiveDateRange | null> {
+    return queryOptionArchiveDateRange(this.query, root)
   }
 
   /** Every two-sided quote for one expiration at one minute. */

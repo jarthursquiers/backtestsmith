@@ -194,6 +194,32 @@ describe('the 0DTE EMA direction strategy', () => {
   })
 })
 
+describe('the weekly 45 DTE EMA butterfly', () => {
+  it('builds the requested weekly, slightly OTM 50-wide entry', () => {
+    const config = configFor('weekly-45dte-ema-butterfly')
+
+    expect(config.entry).toEqual({ type: 'ema', period: 9 })
+    expect(config.entryWeekdays).toEqual([1])
+    expect(config.targetDte).toBe(45)
+    expect(config.maxDeviation).toBe(3)
+    expect(config.expirationWeekdays).toEqual([1, 2, 3, 4, 5])
+    expect(config.placement).toEqual({ type: 'fixedDistance', offsetPoints: 25 })
+    expect(config.wingWidth).toBe(50)
+  })
+
+  it('compares only hold, +200%, +300%, and +500% by default', () => {
+    expect(requireStrategy('weekly-45dte-ema-butterfly').defaultManagements).toEqual([
+      'hold', 'tp200', 'tp300', 'tp500'
+    ])
+  })
+
+  it('describes the entry and weekly schedule from the resolved config', () => {
+    expect(describeConfig(configFor('weekly-45dte-ema-butterfly'))).toBe(
+      '9 EMA | 45 DTE | 50-wide | 25 pts OTM | weekly Monday'
+    )
+  })
+})
+
 describe('the 0DTE opening range strategy', () => {
   it('targets the entry session itself and admits every weekday expiration', () => {
     const config = configFor('orb-0dte-butterfly')

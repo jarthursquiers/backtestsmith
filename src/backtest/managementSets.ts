@@ -33,6 +33,7 @@ const BUILDERS: Record<string, () => ExitStrategy> = {
   tp150: () => profitTarget(150),
   tp200: () => profitTarget(200),
   tp300: () => profitTarget(300),
+  tp500: () => profitTarget(500),
 
   sl25: () => stopLoss(25),
   sl50: () => stopLoss(50),

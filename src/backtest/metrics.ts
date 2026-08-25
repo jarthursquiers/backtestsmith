@@ -38,7 +38,7 @@ export interface MetricsTrade {
  * as annualized Sharpe values the sample cannot support.
  */
 
-const REACH_THRESHOLDS = [25, 50, 100, 150, 200, 300] as const
+const REACH_THRESHOLDS = [25, 50, 100, 150, 200, 300, 500] as const
 
 function mean(values: readonly number[]): number {
   if (values.length === 0) return 0

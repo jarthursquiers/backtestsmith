@@ -197,6 +197,13 @@ export interface StudyConfig {
    */
   entryWindowMinutes?: number
 
+  /**
+   * Weekdays on which a weekly entry may be opened, 1 = Monday .. 5 = Friday.
+   * Absent or empty means every trading session. A closed scheduled day shifts
+   * to the nearest open session in that ISO week.
+   */
+  entryWeekdays?: number[]
+
   entry: EntryConfig
   targetDte: number
   expirationRule: ExpirationRule

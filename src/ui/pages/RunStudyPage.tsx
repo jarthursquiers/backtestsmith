@@ -8,7 +8,7 @@ import {
   requireStrategy,
   type StrategyParamValue
 } from '../../shared/strategyCatalog.js'
-import { tradingDaysBetween } from '../../core/time/marketTime.js'
+import { scheduledEntryDays } from '../../core/time/marketTime.js'
 import { Badge, Button, Card, Field, Input, Notice, PageHeader, Select } from '../components/primitives.js'
 import { fmtInt, shiftDate, todayEastern } from '../lib/format.js'
 import { useAsyncAction } from '../lib/hooks.js'
@@ -48,21 +48,11 @@ export function RunStudyPage() {
 
   const sessions = useMemo(() => {
     try {
-      const dates = tradingDaysBetween(from, to)
-      if (strategy.structure !== 'doubleCalendar') return dates.length
-
       const built = strategy.build({ ...defaultStrategyParams(strategy), ...params })
-      if (!built.calendar || built.calendar.entryWeekdays.length === 0) return dates.length
-
-      // A scheduled calendar opens once per ISO week. Holidays shift the entry
-      // to another session in that week, so counting week buckets is exact even
-      // when the requested weekday is closed.
-      return new Set(dates.map((date) => {
-        const day = new Date(`${date}T12:00:00Z`)
-        const weekday = day.getUTCDay() || 7
-        day.setUTCDate(day.getUTCDate() - weekday + 1)
-        return day.toISOString().slice(0, 10)
-      })).size
+      const weekdays = strategy.structure === 'doubleCalendar'
+        ? built.calendar?.entryWeekdays
+        : built.entryWeekdays
+      return scheduledEntryDays(from, to, weekdays).length
     } catch {
       return 0
     }
@@ -163,7 +153,7 @@ export function RunStudyPage() {
             <Notice tone="info">
               {strategy.structure === 'doubleCalendar'
                 ? 'Double calendars run from the local option archive. Entries must fill inside the entry window, carried quotes cannot exceed the configured age, and both calendars must have non-negative close values. Strict mode requires fresh same-minute prices for all four legs.'
-                : 'Safety checks are always on: entries must fill inside the entry window, carried quotes cannot exceed the configured age, and every synthetic mark must remain between zero and the wing width. Strict mode requires fresh same-minute prices for all three legs.'}
+                : 'Historical option selection is archive-aware: only expirations and strikes quoted during the entry window are eligible, and only fully archived lifecycles are tested. Safety checks still reject stale or impossible synthetic marks.'}
             </Notice>
           </div>
           <div className={`grid gap-3 ${strategy.structure === 'doubleCalendar' ? 'md:grid-cols-3' : 'md:grid-cols-4'}`}>
@@ -217,8 +207,8 @@ export function RunStudyPage() {
               <span>
                 <span className="block text-[12px] font-medium text-ink">Offline only</span>
                 <span className="block text-[10px] leading-relaxed text-ink-faint">
-                  Read DuckDB only and refuse provider fallback. Use this to prove an archived strategy can run
-                  after the ThetaData subscription is removed.
+                  Read DuckDB only for every input and refuse provider fallback. Option selection and option legs
+                  already prefer the local ThetaData archive inside its downloaded date range.
                 </span>
               </span>
             </label>
@@ -238,7 +228,7 @@ export function RunStudyPage() {
               <span className="text-[11px] text-ink-faint">
                 {strategy.structure === 'doubleCalendar'
                   ? 'Calendar entries are served only from the local option archive.'
-                  : 'Uncached data is fetched from the configured paid providers, so a cold first run can take time; a re-run over the same range is served from the local cache.'}
+                  : 'Inside the ThetaData archive range, historical chains and option legs are local-only; providers are used only for other required inputs or dates outside that range.'}
               </span>
             </div>
           }

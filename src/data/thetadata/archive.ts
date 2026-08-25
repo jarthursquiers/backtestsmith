@@ -35,7 +35,11 @@ export function archiveQuoteDates(
   const first = request.from > addCalendarDays(expiration, -request.maxDte)
     ? request.from
     : addCalendarDays(expiration, -request.maxDte)
-  const last = request.to < expiration ? request.to : expiration
+  // `to` is the last *entry* session, not the end of each position. Once an
+  // expiration can be selected by an entry in the requested range, retain its
+  // quotes through expiration so hold-to-expiry and every management rule see
+  // the complete path. Expiration discovery is already extended by maxDte.
+  const last = expiration
   return first > last ? [] : tradingDaysBetween(first, last)
 }
 

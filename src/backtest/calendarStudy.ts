@@ -10,7 +10,7 @@ import { DEFAULT_CALENDAR_EXECUTION } from '../domain/doubleCalendar.js'
 import {
   easternToTimestamp,
   parseTimeOfDay,
-  toEastern,
+  scheduledEntryDays,
   tradingDaysBetween,
   type MarketDate
 } from '../core/time/marketTime.js'
@@ -179,30 +179,7 @@ export function nearestExpiration(
  * falls on a holiday week, which is not a random sample.
  */
 export function entrySessions(config: DoubleCalendarStudyConfig): MarketDate[] {
-  const all = tradingDaysBetween(config.from, config.to)
-  const weekdays = config.entryWeekdays
-  if (!weekdays || weekdays.length === 0) return all
-
-  const wanted = new Set(weekdays)
-  const byWeek = new Map<string, MarketDate[]>()
-
-  for (const date of all) {
-    const eastern = toEastern(easternToTimestamp(date, 12, 0))
-    const week = `${eastern.weekYear}-${String(eastern.weekNumber).padStart(2, '0')}`
-    const bucket = byWeek.get(week)
-    if (bucket) bucket.push(date)
-    else byWeek.set(week, [date])
-  }
-
-  const chosen: MarketDate[] = []
-  for (const dates of byWeek.values()) {
-    const scheduled = dates.find((date) =>
-      wanted.has(toEastern(easternToTimestamp(date, 12, 0)).weekday)
-    )
-    chosen.push(scheduled ?? dates[0]!)
-  }
-
-  return chosen.sort()
+  return scheduledEntryDays(config.from, config.to, config.entryWeekdays)
 }
 
 function buildDefinition(

@@ -363,14 +363,19 @@ describe('butterfly placement', () => {
     expect(6000 - result.upperStrike).toBeGreaterThanOrEqual(90)
   })
 
-  it('refuses rather than silently narrowing a wing', () => {
-    // A chain missing the lower wing must not be completed with a nearby strike:
-    // that would change the width, and therefore the risk and every normalized
-    // distance derived from it.
+  it('tries the next-nearest complete centre without narrowing the wings', () => {
+    // The ideal 5900 centre is missing its 5875 lower wing. A real chain still
+    // offers a valid exact-width structure at 5895, so placement should use it
+    // rather than discarding the whole session.
     const gapped = strikes.filter((k) => k !== 5875)
-    expect(
-      fixedDistancePlacement(100).place({ signal: bearish, availableStrikes: gapped, wingWidth: 25 })
-    ).toBeNull()
+    const result = fixedDistancePlacement(100).place({
+      signal: bearish,
+      availableStrikes: gapped,
+      wingWidth: 25
+    })!
+    expect(result.centerStrike).toBe(5895)
+    expect(result.lowerStrike).toBe(5870)
+    expect(result.upperStrike).toBe(5920)
   })
 
   it('rounds the centre to a listed strike', () => {

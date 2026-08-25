@@ -18,6 +18,8 @@ import {
   easternToTimestamp,
   marketDateOf,
   parseTimeOfDay,
+  previousTradingDay,
+  scheduledEntryDays,
   toEastern,
   tradingDaysBetween,
   type MarketDate
@@ -48,6 +50,7 @@ import { buildManagementSet } from './managementSets.js'
 import { createLogger } from '../services/logger.js'
 import { studyWarmupStart } from './studyPreparation.js'
 import { previousGaugeClose, readGauge, validateBands, wingWidthForLevel } from './wingWidth.js'
+import type { OptionArchiveDateRange } from '../data/calendarArchiveQueries.js'
 
 const log = createLogger('study')
 
@@ -69,6 +72,19 @@ export interface StudyDataSource {
   /** Option chain for an expiration; empty means the expiration is not listed. */
   getChain(underlying: string, expiration: MarketDate, type: OptionType): Promise<OptionContract[]>
   getOptionBars(ticker: string, from: MarketDate, to: MarketDate): Promise<OptionBar[]>
+  /** Local-archive capabilities. When present, they are authoritative inside their date range. */
+  getOptionArchiveDateRange?(root: string): Promise<OptionArchiveDateRange | null>
+  listArchivedExpirations?(root: string, onDate: MarketDate): Promise<MarketDate[]>
+  getArchivedChain?(
+    root: string,
+    underlying: string,
+    expiration: MarketDate,
+    type: OptionType,
+    onDate: MarketDate,
+    minute: number,
+    carryMinutes: number
+  ): Promise<OptionContract[]>
+  getArchivedOptionBars?(ticker: string, from: MarketDate, to: MarketDate): Promise<OptionBar[]>
 }
 
 export interface StudyHooks {
@@ -88,10 +104,14 @@ export async function preflightStudy(
   config: StudyConfig,
   source: StudyDataSource
 ): Promise<StudyPreflight> {
-  const sessions = tradingDaysBetween(config.from, config.to)
+  const sessions = scheduledEntryDays(config.from, config.to, config.entryWeekdays)
   const indexTicker = resolveIndexTicker(config)
   const blockers: string[] = []
   const warnings: string[] = []
+  const rawArchiveRange = source.getOptionArchiveDateRange
+    ? await probeArchiveRange(source, config.preferredRoot ?? config.underlying, blockers)
+    : null
+  const archiveRange = matureArchiveRange(rawArchiveRange)
 
   /*
    * Preflight exists to explain why a run cannot work, so it must not fail in
@@ -237,7 +257,16 @@ export async function preflightStudy(
   const furthestDte = config.targetDte + (config.maxDeviation ?? 3)
   const lastDataDate = shiftDays(config.to, furthestDte)
   const today = marketDateOf(Date.now())
-  if (sessions.length > 0 && lastDataDate >= today) {
+  if (archiveRange) {
+    const safeTo = shiftDays(archiveRange.to, -furthestDte)
+    if (lastDataDate > archiveRange.to) {
+      warnings.push(
+        `The local option archive covers ${archiveRange.from} through ${archiveRange.to}. ` +
+          `Entries after approximately ${safeTo} cannot have a complete ${config.targetDte}-DTE lifecycle and ` +
+          'will be excluded rather than sent to a provider.'
+      )
+    }
+  } else if (sessions.length > 0 && lastDataDate >= today) {
     const safeTo = shiftDays(today, -(furthestDte + 1))
     warnings.push(
       `Trades entered near ${config.to} expire as late as ${lastDataDate}, which is not in the past. ` +
@@ -260,6 +289,27 @@ export async function preflightStudy(
     blockers,
     warnings
   }
+}
+
+async function probeArchiveRange(
+  source: StudyDataSource,
+  root: string,
+  blockers: string[]
+): Promise<OptionArchiveDateRange | null> {
+  try {
+    return await source.getOptionArchiveDateRange!(root)
+  } catch (error) {
+    blockers.push(`Local option archive coverage could not be read: ${error instanceof Error ? error.message : String(error)}`)
+    return null
+  }
+}
+
+/** Never call an in-progress session a complete lifecycle boundary. */
+function matureArchiveRange(range: OptionArchiveDateRange | null, now = Date.now()): OptionArchiveDateRange | null {
+  if (!range) return null
+  const lastCompletedSession = previousTradingDay(marketDateOf(now))
+  const to = range.to < lastCompletedSession ? range.to : lastCompletedSession
+  return range.from <= to ? { ...range, to } : null
 }
 
 export interface StudyOutcome {
@@ -339,9 +389,17 @@ export async function runStudy(
   }
 
   const entryTime = parseTimeOfDay(config.entryTime)
-  const sessions = tradingDaysBetween(config.from, config.to)
+  const sessions = scheduledEntryDays(config.from, config.to, config.entryWeekdays)
   // Index bars live under the I: convention while chains use the bare root.
   const indexTicker = resolveIndexTicker(config)
+  const archiveRoot = config.preferredRoot ?? config.underlying
+  const rawArchiveRange = source.getOptionArchiveDateRange &&
+    source.listArchivedExpirations &&
+    source.getArchivedChain &&
+    source.getArchivedOptionBars
+    ? await source.getOptionArchiveDateRange(archiveRoot)
+    : null
+  const archiveRange = matureArchiveRange(rawArchiveRange)
 
   /*
    * Daily history starts well before the range so the EMA is warm on the first
@@ -442,6 +500,7 @@ export async function runStudy(
     const scheduledTimestamp = easternToTimestamp(entryDate, entryTime.hour, entryTime.minute)
     let entryTimestamp = scheduledTimestamp
     let timing: EntryTiming | undefined
+    const windowMinutes = Math.max(0, config.entryWindowMinutes ?? 15)
 
     if (entryStrategy.resolveEntryTiming) {
       const outcome = entryStrategy.resolveEntryTiming({
@@ -471,6 +530,14 @@ export async function runStudy(
       resolveExpirationWeekdays(config)
     )
 
+    /*
+     * Inside the downloaded range, the archive is the historical truth. The
+     * provider's contract endpoint describes the final/current catalogue and
+     * therefore includes expirations and strikes which did not exist yet on an
+     * old entry date. That look-ahead was the source of the 45-DTE false skips.
+     */
+    const useArchive = archiveRange !== null && entryDate >= archiveRange.from && entryDate <= archiveRange.to
+
     const optionTypeForChain: OptionType =
       config.entry.type === 'fixed'
         ? config.entry.direction === 'bearish'
@@ -480,10 +547,24 @@ export async function runStudy(
 
     report(index, entryDate, 'checking expirations')
     const listed: MarketDate[] = []
-    for (const candidate of candidates) {
-      if (hooks.signal?.aborted) break
-      const chain = await source.getChain(config.underlying, candidate, optionTypeForChain)
-      if (chain.length > 0) listed.push(candidate)
+    let historicallyQuotedCandidates = 0
+    if (useArchive) {
+      const historicallyQuoted = await source.listArchivedExpirations!(archiveRoot, entryDate)
+      const allowed = new Set(candidates)
+      for (const expiration of historicallyQuoted) {
+        // An expiration beyond the end of the archive has only a partial path.
+        // Excluding it here keeps hold-to-expiry and every profit target on the
+        // same fully observed population.
+        if (!allowed.has(expiration)) continue
+        historicallyQuotedCandidates++
+        if (expiration <= archiveRange.to) listed.push(expiration)
+      }
+    } else {
+      for (const candidate of candidates) {
+        if (hooks.signal?.aborted) break
+        const chain = await source.getChain(config.underlying, candidate, optionTypeForChain)
+        if (chain.length > 0) listed.push(candidate)
+      }
     }
 
     const choice = selectExpiration({
@@ -495,18 +576,47 @@ export async function runStudy(
       ...(config.maxDeviation !== undefined ? { maxDeviation: config.maxDeviation } : {})
     })
     if (!choice) {
-      skip(`no listed expiration within tolerance of ${config.targetDte} DTE`)
+      skip(
+        useArchive
+          ? historicallyQuotedCandidates > 0
+            ? `no fully matured, historically quoted expiration within tolerance of ${config.targetDte} DTE ` +
+                `(local option archive ends ${archiveRange.to})`
+            : `no historically quoted expiration within tolerance of ${config.targetDte} DTE on the entry date`
+          : `no listed expiration within tolerance of ${config.targetDte} DTE`
+      )
       continue
     }
 
     // --- resolve the index level at entry, and the expected move -------------
-    const chainForStrikes = await source.getChain(config.underlying, choice.expiration, optionTypeForChain)
+    const snapshotMinute = entryTimestamp + windowMinutes * 60_000
+    const snapshotCarryMinutes = windowMinutes + (
+      config.pricing.missingDataMode === 'strict' ? 0 : config.pricing.maxStaleMinutes
+    )
+    const chainCache = new Map<OptionType, OptionContract[]>()
+    const readChain = async (type: OptionType): Promise<OptionContract[]> => {
+      const cached = chainCache.get(type)
+      if (cached) return cached
+      const chain = useArchive
+        ? await source.getArchivedChain!(
+            archiveRoot,
+            config.underlying,
+            choice.expiration,
+            type,
+            entryDate,
+            snapshotMinute,
+            snapshotCarryMinutes
+          )
+        : await source.getChain(config.underlying, choice.expiration, type)
+      chainCache.set(type, chain)
+      return chain
+    }
+    const chainForStrikes = await readChain(optionTypeForChain)
     const callChain = optionTypeForChain === 'call'
       ? chainForStrikes
-      : await source.getChain(config.underlying, choice.expiration, 'call')
+      : await readChain('call')
     const putChain = optionTypeForChain === 'put'
       ? chainForStrikes
-      : await source.getChain(config.underlying, choice.expiration, 'put')
+      : await readChain('put')
     const rootOk = (c: OptionContract): boolean =>
       !config.preferredRoot || (c.root ?? '').toUpperCase() === config.preferredRoot.toUpperCase()
 
@@ -561,7 +671,6 @@ export async function runStudy(
      * trader entering "around 9:35" would have filled anyway. The minute used
      * becomes the recorded entry, so nothing is misattributed.
      */
-    const windowMinutes = Math.max(0, config.entryWindowMinutes ?? 15)
     for (let offset = 0; offset <= windowMinutes; offset++) {
       const minute = entryTimestamp + offset * 60_000
       let candidateUnderlying: number | undefined
@@ -680,7 +789,7 @@ export async function runStudy(
       wingWidth = wingWidthForLevel(config.wingWidthRule.bands, gauge.level)
     }
 
-    const directionalChain = await source.getChain(config.underlying, choice.expiration, signal.optionType)
+    const directionalChain = await readChain(signal.optionType)
     const strikes = [...new Set(directionalChain.filter(rootOk).map((c) => c.strike))].sort((a, b) => a - b)
 
     const placed = placement.place({ signal, availableStrikes: strikes, wingWidth })
@@ -714,10 +823,13 @@ export async function runStudy(
     }
 
     report(index, entryDate, 'fetching legs')
+    const getLegBars = useArchive
+      ? source.getArchivedOptionBars!.bind(source)
+      : source.getOptionBars.bind(source)
     const [lower, center, upper] = await Promise.all([
-      source.getOptionBars(definition.lowerTicker, entryDate, choice.expiration),
-      source.getOptionBars(definition.centerTicker, entryDate, choice.expiration),
-      source.getOptionBars(definition.upperTicker, entryDate, choice.expiration)
+      getLegBars(definition.lowerTicker, entryDate, choice.expiration),
+      getLegBars(definition.centerTicker, entryDate, choice.expiration),
+      getLegBars(definition.upperTicker, entryDate, choice.expiration)
     ])
 
     const underlyingBars = await collectUnderlying(source, indexTicker, entryDate, choice.expiration)

@@ -38,6 +38,7 @@ export const MANAGEMENT_CATALOG: readonly ManagementMethod[] = [
   { id: 'tp150', label: '+150% target', group: 'Profit target' },
   { id: 'tp200', label: '+200% target', group: 'Profit target' },
   { id: 'tp300', label: '+300% target', group: 'Profit target' },
+  { id: 'tp500', label: '+500% target', group: 'Profit target' },
 
   { id: 'sl25', label: '-25% stop', group: 'Stop' },
   { id: 'sl50', label: '-50% stop', group: 'Stop' },

@@ -4,6 +4,7 @@ import type { OptionContract, OptionType } from '../domain/contracts.js'
 import type { StudyConfig } from '../shared/study.js'
 import {
   easternToTimestamp,
+  marketDateOf,
   sessionMinuteCount,
   tradingDaysBetween
 } from '../core/time/marketTime.js'
@@ -117,6 +118,16 @@ const CONFIG: StudyConfig = {
 }
 
 describe('study runner', () => {
+  it('runs a weekly butterfly only once per scheduled week', async () => {
+    const outcome = await runStudy({ ...CONFIG, entryWeekdays: [1] }, makeSource())
+
+    expect(outcome.entriesAttempted).toBe(2)
+    expect(outcome.series.map((series) => marketDateOf(series.entryTimestamp))).toEqual([
+      '2025-06-02',
+      '2025-06-09'
+    ])
+  })
+
   it('generates one entry per eligible session and applies every management method', async () => {
     const source = makeSource()
     const outcome = await runStudy(CONFIG, source)
@@ -237,6 +248,53 @@ describe('study runner', () => {
     await expect(
       runStudy({ ...CONFIG, managements: ['hold', 'nonsense'] }, makeSource())
     ).rejects.toThrow(/Unknown management method "nonsense"/)
+  })
+})
+
+describe('historical option archive selection', () => {
+  function archivedSource(options: { rangeTo?: string; expirations?: string[] } = {}) {
+    const source = makeSource()
+    const staticChain = source.getChain.bind(source)
+    const staticBars = source.getOptionBars.bind(source)
+    const providerChain = vi.fn(source.getChain.bind(source))
+    source.getChain = providerChain
+    source.getOptionArchiveDateRange = async () => ({
+      from: '2025-05-01',
+      to: options.rangeTo ?? '2025-06-30'
+    })
+    source.listArchivedExpirations = async () => options.expirations ?? ['2025-06-11']
+    source.getArchivedChain = async (_root, _underlying, expiration, type) =>
+      staticChain('SPX', expiration, type)
+    source.getArchivedOptionBars = staticBars
+    return { source, providerChain }
+  }
+
+  it('uses the expiration and strike universe quoted on the historical entry date', async () => {
+    const { source, providerChain } = archivedSource()
+    const outcome = await runStudy({
+      ...CONFIG,
+      from: '2025-06-02',
+      to: '2025-06-02',
+      expirationWeekdays: [1, 2, 3, 4, 5]
+    }, source)
+
+    expect(outcome.series).toHaveLength(1)
+    expect(outcome.series[0]!.definition.expiration).toBe('2025-06-11')
+    // The provider catalogue contains the closer 7-DTE expiration, but must not
+    // be consulted once the entry lies inside the archive's coverage.
+    expect(providerChain).not.toHaveBeenCalled()
+  })
+
+  it('excludes an expiration whose lifecycle runs past the archive boundary', async () => {
+    const { source, providerChain } = archivedSource({
+      rangeTo: '2025-06-08',
+      expirations: ['2025-06-09']
+    })
+    const outcome = await runStudy({ ...CONFIG, from: '2025-06-02', to: '2025-06-02' }, source)
+
+    expect(outcome.series).toHaveLength(0)
+    expect(outcome.skipped[0]!.reason).toContain('no fully matured, historically quoted expiration')
+    expect(providerChain).not.toHaveBeenCalled()
   })
 })
 
